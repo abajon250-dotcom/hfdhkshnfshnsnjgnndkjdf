@@ -33,6 +33,15 @@ async def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, amount REAL,
             status TEXT DEFAULT 'pending', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE TABLE IF NOT EXISTS banned_users (
+            user_id INTEGER PRIMARY KEY, reason TEXT, banned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS admin_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, admin_id INTEGER, action TEXT, target TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS operator_subs (
+            user_id INTEGER, operator_id INTEGER, PRIMARY KEY(user_id, operator_id)
+        );
         """)
 
         cur = await db.execute("SELECT COUNT(*) FROM operators")
@@ -134,6 +143,84 @@ async def start_all_operators():
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE operators SET number_active=1, qr_active=1")
         await db.commit()
+
+
+# --- БАНЫ ---
+async def ban_user(user_id, reason="Нарушение правил"):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("INSERT OR REPLACE INTO banned_users (user_id, reason) VALUES (?, ?)", (user_id, reason))
+        await db.commit()
+
+
+async def unban_user(user_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM banned_users WHERE user_id=?", (user_id,))
+        await db.commit()
+
+
+async def is_user_banned(user_id) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT 1 FROM banned_users WHERE user_id=?", (user_id,)) as c:
+            return (await c.fetchone()) is not None
+
+
+# --- ЛОГИ ---
+async def add_admin_log(admin_id, action, target):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("INSERT INTO admin_logs (admin_id, action, target) VALUES (?, ?, ?)",
+                         (admin_id, action, target))
+        await db.commit()
+
+
+async def get_admin_logs(limit=20):
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM admin_logs ORDER BY id DESC LIMIT ?", (limit,)) as c:
+            return await c.fetchall()
+
+
+# --- ПОДПИСКИ НА ОПЕРАТОРОВ ---
+async def sub_to_operator(user_id, op_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("INSERT OR IGNORE INTO operator_subs (user_id, operator_id) VALUES (?, ?)", (user_id, op_id))
+        await db.commit()
+
+
+async def get_operator_subs(op_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT user_id FROM operator_subs WHERE operator_id=?", (op_id,)) as c:
+            return [r[0] for r in await c.fetchall()]
+
+
+async def clear_operator_subs(op_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM operator_subs WHERE operator_id=?", (op_id,))
+        await db.commit()
+
+
+# --- ЭКСПОРТ В CSV ---
+async def get_all_apps_export():
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("""
+            SELECT a.id, a.user_id, u.username, a.mode, COALESCE(a.phone_number, a.qr_number) as val, 
+                   o.name, a.status, a.created_at, a.processed_at
+            FROM applications a 
+            JOIN operators o ON o.id = a.operator_id
+            LEFT JOIN users u ON u.user_id = a.user_id
+            ORDER BY a.id DESC
+        """) as c:
+            return await c.fetchall()
+
+
+async def get_all_withdrawals_export():
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("""
+            SELECT w.id, w.user_id, u.username, w.amount, w.status, w.created_at
+            FROM withdrawals w
+            LEFT JOIN users u ON u.user_id = w.user_id
+            ORDER BY w.id DESC
+        """) as c:
+            return await c.fetchall()
 
 
 # --- АНТИ-СПАМ ---

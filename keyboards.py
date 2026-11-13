@@ -86,7 +86,7 @@ def operators_kb(operators, mode, active_category='regular'):
         else:
             kb.button(
                 text=btn_text,
-                callback_data=f"op_disabled:{op['name']}",
+                callback_data=f"op_disabled:{op['id']}",
                 style="danger",
                 **({"icon_custom_emoji_id": op["emoji_id"]} if op["emoji_id"] else {})
             )
@@ -103,7 +103,6 @@ def operators_kb(operators, mode, active_category='regular'):
     return kb.as_markup()
 
 
-# ОБНОВЛЕННАЯ КЛАВИАТУРА ПРОФИЛЯ С ЭМОДЗИ
 def profile_kb():
     kb = InlineKeyboardBuilder()
     kb.button(text="Вывести средства", callback_data="withdraw", icon_custom_emoji_id=E_WALLET)
@@ -146,7 +145,7 @@ def user_ticket_action_kb(ticket_id):
     return kb.as_markup()
 
 
-def application_admin_kb(app_id, mode, status='pending'):
+def application_admin_kb(app_id, mode, status='pending', user_id=None):
     kb = InlineKeyboardBuilder()
     if status in ('pending', 'code_requested', 'code_sent'):
         kb.button(text="Принять", callback_data=f"adm_accept:{app_id}", style="success", icon_custom_emoji_id=E_SUCCESS)
@@ -154,7 +153,9 @@ def application_admin_kb(app_id, mode, status='pending'):
             kb.button(text="Запросить код", callback_data=f"adm_code:{app_id}", style="primary")
         kb.button(text="Отклонить", callback_data=f"adm_reject:{app_id}", style="danger", icon_custom_emoji_id=E_FAIL)
         kb.button(text="Отмена", callback_data=f"adm_cancel:{app_id}")
-        kb.adjust(2, 1, 1)
+        if user_id:
+            kb.button(text="🚫 Забанить", callback_data=f"adm_ban:{user_id}", style="danger")
+        kb.adjust(2, 1, 1, 1)
     elif status == 'accepted':
         kb.button(text="Отменить принятие", callback_data=f"adm_undo_accept:{app_id}", style="danger")
     elif status == 'rejected':
@@ -180,9 +181,19 @@ def admin_panel_kb():
     kb.button(text="Статистика", callback_data="adm_stats_menu", icon_custom_emoji_id=E_STATS)
     kb.button(text="Рассылка", callback_data="adm_broadcast", icon_custom_emoji_id=E_BROADCAST)
     kb.button(text="Заявки на вывод", callback_data="adm_withdrawals", icon_custom_emoji_id=E_MONEY)
+    kb.button(text="📥 Экспорт базы (CSV)", callback_data="adm_export_csv")
+    kb.button(text="📜 Логи действий", callback_data="adm_logs")
+    kb.button(text="🔓 Разбанить юзера", callback_data="adm_unban_menu")
     kb.button(text="▶️ Начать ворк", callback_data="adm_start_all", style="success", icon_custom_emoji_id=E_SUCCESS)
     kb.button(text="⏹ Стоп-ворк", callback_data="adm_stop_all", style="danger", icon_custom_emoji_id=E_NOT_ACCEPT)
     kb.button(text="Закрыть", callback_data="close_admin", icon_custom_emoji_id=E_FAIL)
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def adm_notify_operator_kb(op_id):
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🔔 Уведомить о включении", callback_data=f"notify_op:{op_id}")
     kb.adjust(1)
     return kb.as_markup()
 

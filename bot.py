@@ -1,9 +1,9 @@
-import asyncio, logging
+import asyncio, logging, csv, io
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, BufferedInputFile
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.filters import CommandStart, StateFilter
@@ -52,6 +52,7 @@ class AdminStates(StatesGroup):
     waiting_price = State()
     waiting_reject_reason = State()
     waiting_new_name = State()
+    waiting_unban_id = State()
 
 
 class SupportStates(StatesGroup):
@@ -112,6 +113,9 @@ async def get_mode_message_and_kb(mode: str):
 @dp.message(CommandStart())
 async def cmd_start(msg: Message, state: FSMContext):
     await state.clear()
+    if await is_user_banned(msg.from_user.id):
+        return await msg.answer("⛔ Вы заблокированы в этом боте. Обратитесь в поддержку.")
+
     referrer_id = None
     parts = msg.text.split(maxsplit=1)
     if len(parts) > 1 and parts[1].startswith("ref_"):
@@ -140,6 +144,9 @@ async def cmd_start(msg: Message, state: FSMContext):
 
 @dp.callback_query(F.data == "check_sub")
 async def check_sub(cb: CallbackQuery):
+    if await is_user_banned(cb.from_user.id):
+        return await cb.answer("⛔ Вы заблокированы.", show_alert=True)
+
     try:
         m = await cb.bot.get_chat_member(CHANNEL_ID, cb.from_user.id)
         ok = m.status not in ("left", "kicked")
@@ -155,6 +162,9 @@ async def check_sub(cb: CallbackQuery):
 # --- ПРОФИЛЬ ---
 @dp.message(F.text.contains("Мой профиль"))
 async def profile(msg: Message):
+    if await is_user_banned(msg.from_user.id):
+        return await msg.answer("⛔ Вы заблокированы.")
+
     u = await get_user(msg.from_user.id)
     if not u: return await msg.answer("Нажми /start.")
 
@@ -188,7 +198,6 @@ async def profile(msg: Message):
     await msg.answer(text, reply_markup=profile_kb(), disable_web_page_preview=True)
 
 
-# --- ИСТОРИЯ И ЖУРНАЛ ---
 @dp.callback_query(F.data == "audit_log")
 async def audit_log(cb: CallbackQuery):
     apps = await get_user_applications(cb.from_user.id)
@@ -226,6 +235,8 @@ async def withdraw_history(cb: CallbackQuery):
 @dp.message(F.text.contains("Поддержка"))
 async def support_btn(msg: Message, state: FSMContext):
     await state.clear()
+    if await is_user_banned(msg.from_user.id):
+        return await msg.answer("⛔ Вы заблокированы.")
     await msg.answer(f"{E_SUPPORT_HTML} <b>Поддержка</b>\n\nВыберите действие:", reply_markup=support_menu_kb())
 
 
@@ -270,7 +281,7 @@ async def support_my(cb: CallbackQuery):
     await cb.answer()
 
 
-# --- ОТВЕТЫ И ЗАКРЫТИЕ ТИКЕТОВ ---
+# --- ТИКЕТЫ (ОТВЕТЫ) ---
 @dp.callback_query(F.data.startswith("user_reply_ticket:"))
 async def user_reply_ticket(cb: CallbackQuery, state: FSMContext):
     t_id = int(cb.data.split(":")[1])
@@ -383,6 +394,9 @@ async def withdraw(cb: CallbackQuery):
 @dp.message(F.text.contains("Начать работу"))
 async def start_work(msg: Message, state: FSMContext):
     await state.clear()
+    if await is_user_banned(msg.from_user.id):
+        return await msg.answer("⛔ Вы заблокированы.")
+
     if await check_active_app(msg.from_user.id):
         return await msg.answer(f"{E_FAIL_HTML} У вас уже есть активная заявка на проверке. Дождитесь ее завершения.")
 
@@ -437,8 +451,22 @@ async def switch_category(cb: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("op_disabled:"))
 async def op_disabled_alert(cb: CallbackQuery):
-    op_name = cb.data.split(":", 1)[1]
-    await cb.answer(f"⚠️ У оператора {op_name} закрыт приём!", show_alert=True)
+    op_id = int(cb.data.split(":")[1])
+    op = await get_operator(op_id)
+    await cb.message.answer(
+        f"⚠️ У оператора <b>{op['name']}</b> закрыт приём.\n\n"
+        f"Хотите получить уведомление, когда он снова включится?",
+        reply_markup=adm_notify_operator_kb(op_id)
+    )
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("notify_op:"))
+async def notify_op_sub(cb: CallbackQuery):
+    op_id = int(cb.data.split(":")[1])
+    await sub_to_operator(cb.from_user.id, op_id)
+    await cb.message.edit_text("🔔 Вы подписались! Мы напишем вам, как только этот оператор снова включится.")
+    await cb.answer("Вы подписаны!")
 
 
 @dp.callback_query(F.data.startswith("op:"))
@@ -477,7 +505,8 @@ async def receive_number(msg: Message, state: FSMContext):
             f"{E_PROFILE_HTML} {msg.from_user.full_name}\n{E_LINK_HTML} @{msg.from_user.username or '—'}\n🆔 <code>{msg.from_user.id}</code>\n\n"
             f"{E_PHONE_HTML} Оператор: <b>{op['name']}</b>\n☎️ Номер: <code>{phone}</code>\n{E_MONEY_HTML} Цена: ${op['price_number']:.2f}")
 
-    sent = await bot.send_message(ADMIN_GROUP_ID, text, reply_markup=application_admin_kb(app_id, "number"))
+    sent = await bot.send_message(ADMIN_GROUP_ID, text,
+                                  reply_markup=application_admin_kb(app_id, "number", "pending", msg.from_user.id))
     await set_admin_message(app_id, ADMIN_GROUP_ID, sent.message_id)
     await state.clear()
     await msg.answer(
@@ -517,7 +546,7 @@ async def qr_number(msg: Message, state: FSMContext):
                f"{E_PROFILE_HTML} {msg.from_user.full_name}\n{E_LINK_HTML} @{msg.from_user.username or '—'}\n🆔 <code>{msg.from_user.id}</code>\n\n"
                f"{E_PHONE_HTML} Оператор: <b>{op['name']}</b>\n🔢 Номер QR: <code>{qr_num}</code>\n{E_MONEY_HTML} Цена: ${op['price_qr']:.2f}")
     sent = await bot.send_photo(ADMIN_GROUP_ID, photo=data["qr_photo_id"], caption=caption,
-                                reply_markup=application_admin_kb(app_id, "qr"))
+                                reply_markup=application_admin_kb(app_id, "qr", "pending", msg.from_user.id))
     await set_admin_message(app_id, ADMIN_GROUP_ID, sent.message_id)
     await state.clear()
     await msg.answer(
@@ -580,7 +609,89 @@ async def close_admin(cb: CallbackQuery):
     await cb.answer()
 
 
-# --- ВЫВОДЫ (АДМИН) ---
+# --- ЭКСПОРТ В CSV ---
+@dp.callback_query(F.data == "adm_export_csv")
+async def adm_export_csv(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id): return
+    await cb.answer("Генерирую файлы...")
+
+    # Заявки
+    apps = await get_all_apps_export()
+    output_apps = io.StringIO()
+    writer = csv.writer(output_apps)
+    writer.writerow(["ID", "UserID", "Username", "Mode", "Value", "Operator", "Status", "Created", "Processed"])
+    for a in apps:
+        writer.writerow(a)
+
+    # Выплаты
+    wds = await get_all_withdrawals_export()
+    output_wds = io.StringIO()
+    writer2 = csv.writer(output_wds)
+    writer2.writerow(["ID", "UserID", "Username", "Amount", "Status", "Created"])
+    for w in wds:
+        writer2.writerow(w)
+
+    # Отправка
+    await cb.message.answer_document(
+        BufferedInputFile(output_apps.getvalue().encode('utf-8-sig'), filename="applications.csv"),
+        caption="📥 Экспорт: Заявки")
+    await cb.message.answer_document(
+        BufferedInputFile(output_wds.getvalue().encode('utf-8-sig'), filename="withdrawals.csv"),
+        caption="📥 Экспорт: Выплаты")
+
+
+# --- ЛОГИ АДМИНОВ ---
+@dp.callback_query(F.data == "adm_logs")
+async def adm_logs(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id): return
+    logs = await get_admin_logs()
+    if not logs:
+        return await cb.answer("Логов пока нет.", show_alert=True)
+
+    text = "📜 <b>Последние действия админов:</b>\n\n"
+    for l in logs:
+        date = l['created_at'].split('.')[0]
+        text += f"<b>{date}</b> | ID {l['admin_id']}\n{l['action']} -> {l['target']}\n\n"
+
+    await cb.message.answer(text)
+    await cb.answer()
+
+
+# --- РАЗБАН ---
+@dp.callback_query(F.data == "adm_unban_menu")
+async def adm_unban_menu(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id): return
+    await state.set_state(AdminStates.waiting_unban_id)
+    await cb.message.answer("Введи <b>ID пользователя</b>, которого нужно разбанить:")
+    await cb.answer()
+
+
+@dp.message(AdminStates.waiting_unban_id)
+async def adm_unban_process(msg: Message, state: FSMContext):
+    if not is_admin(msg.from_user.id): return
+    try:
+        user_id = int(msg.text.strip())
+    except:
+        return await msg.answer("❗ Некорректный ID.")
+
+    await unban_user(user_id)
+    await state.clear()
+    await msg.answer(f"{E_SUCCESS_HTML} Пользователь {user_id} разбанен!", reply_markup=admin_panel_kb())
+
+
+@dp.callback_query(F.data.startswith("adm_ban:"))
+async def adm_ban(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id): return
+    user_id = int(cb.data.split(":")[1])
+
+    await ban_user(user_id, "Бан от администратора")
+    await add_admin_log(cb.from_user.id, "Забанил юзера", f"ID: {user_id}")
+
+    await cb.message.edit_reply_markup(reply_markup=None)
+    await cb.message.reply(f"🚫 Пользователь {user_id} забанен!")
+    await cb.answer("Забанен")
+
+
 @dp.callback_query(F.data == "adm_withdrawals")
 async def adm_withdrawals(cb: CallbackQuery):
     if not is_admin(cb.from_user.id): return
@@ -636,6 +747,7 @@ async def adm_pay_w(cb: CallbackQuery):
         await cb.message.answer(f"⚠️ Не удалось написать юзеру {user_id}, но чек создан: {link}")
 
     await approve_withdrawal(w_id)
+    await add_admin_log(cb.from_user.id, "Выплатил вывод", f"ID: {w_id}, ${amount:.2f}")
     await cb.answer("Выплата успешно отправлена юзеру!", show_alert=True)
 
     ws = await get_pending_withdrawals()
@@ -682,6 +794,7 @@ async def save_new_name(msg: Message, state: FSMContext):
     await update_operator_name(op_id, msg.text.strip())
     await state.clear()
     op = await get_operator(op_id)
+    await add_admin_log(msg.from_user.id, "Сменил имя оператора", f"{op_id} -> {msg.text.strip()}")
     await msg.answer(f"{E_SUCCESS_HTML} Название изменено на <b>{msg.text.strip()}</b>!",
                      reply_markup=operator_edit_kb(op))
 
@@ -690,15 +803,37 @@ async def save_new_name(msg: Message, state: FSMContext):
 async def op_toggle(cb: CallbackQuery):
     if not is_admin(cb.from_user.id): return
     _, op_id, field = cb.data.split(":")
-    await toggle_operator(int(op_id), field)
-    await cb.message.edit_reply_markup(reply_markup=operator_edit_kb(await get_operator(int(op_id))))
+    op_id = int(op_id)
+
+    # Получаем состояние ДО изменения
+    old_op = await get_operator(op_id)
+    was_off = not old_op[field]
+
+    await toggle_operator(op_id, field)
+    op = await get_operator(op_id)
+
+    await cb.message.edit_reply_markup(reply_markup=operator_edit_kb(op))
     await cb.answer("Изменено")
+
+    # Если включили - рассылаем уведомления
+    if was_off and op[field]:
+        subs = await get_operator_subs(op_id)
+        if subs:
+            for uid in subs:
+                try:
+                    await bot.send_message(uid, f"🔔 Оператор <b>{op['name']}</b> снова в работе! Можете сдавать.")
+                except:
+                    pass
+            await clear_operator_subs(op_id)
+            await cb.message.answer(f"✅ Отправлены уведомления {len(subs)} юзерам о включении {op['name']}.")
+        await add_admin_log(cb.from_user.id, "Включил оператора", op['name'])
 
 
 @dp.callback_query(F.data == "adm_start_all")
 async def adm_start_all(cb: CallbackQuery):
     if not is_admin(cb.from_user.id): return
     await start_all_operators()
+    await add_admin_log(cb.from_user.id, "Начало ворка (Все вкл)", "Глобально")
     await cb.answer("Все операторы включены (Начало ворка)!", show_alert=True)
     await cb.message.edit_text("👑 <b>Админ-панель</b>\n\n✅ <i>Все операторы включены!</i>",
                                reply_markup=admin_panel_kb())
@@ -708,6 +843,7 @@ async def adm_start_all(cb: CallbackQuery):
 async def adm_stop_all(cb: CallbackQuery):
     if not is_admin(cb.from_user.id): return
     await stop_all_operators()
+    await add_admin_log(cb.from_user.id, "Стоп-ворк (Все выкл)", "Глобально")
     await cb.answer("Все операторы выключены (Стоп-ворк)!", show_alert=True)
     await cb.message.edit_text("👑 <b>Админ-панель</b>\n\n⏹ <i>Все операторы выключены!</i>",
                                reply_markup=admin_panel_kb())
@@ -730,6 +866,7 @@ async def adm_run_payouts(cb: CallbackQuery):
         except Exception:
             pass
         count += 1
+    await add_admin_log(cb.from_user.id, "Принудительные выплаты", f"Заявок: {count}")
     await cb.message.answer(f"{E_SUCCESS_HTML} Выплаты завершены. Начислено заявок: <b>{count}</b>")
 
 
@@ -771,6 +908,7 @@ async def save_price(msg: Message, state: FSMContext):
     await update_operator_price(data["op_id"], field, price)
     await state.clear()
     op = await get_operator(data["op_id"])
+    await add_admin_log(msg.from_user.id, "Сменил цену", f"{op['name']} ({data['mode']}): ${price:.2f}")
     await msg.answer(f"{E_SUCCESS_HTML} Сохранено. Новая цена для {op['name']} ({data['mode']}): <b>${price:.2f}</b>",
                      reply_markup=admin_panel_kb())
 
@@ -823,6 +961,7 @@ async def do_broadcast(msg: Message, state: FSMContext):
             sent += 1
         except:
             pass
+    await add_admin_log(msg.from_user.id, "Рассылка", f"Доставлено: {sent}")
     await msg.answer(f"{E_SUCCESS_HTML} Доставлено: {sent}")
 
 
@@ -865,12 +1004,12 @@ async def accept(cb: CallbackQuery):
         except:
             pass
 
+    await add_admin_log(cb.from_user.id, "Принял заявку", f"#{app_id} (${price:.2f})")
     await safe_edit_app_message(cb.message, f"{E_SUCCESS_HTML} ПРИНЯТА",
                                 application_admin_kb(app_id, app["mode"], "accepted"))
     await cb.answer("Принято")
 
 
-# --- ОТМЕНА ПРИНЯТИЯ ---
 @dp.callback_query(F.data.startswith("adm_undo_accept:"))
 async def undo_accept(cb: CallbackQuery):
     if not is_admin(cb.from_user.id): return
@@ -895,7 +1034,9 @@ async def undo_accept(cb: CallbackQuery):
     except:
         pass
 
-    await safe_edit_app_message(cb.message, f"🔄 ВОЗВРАЩЕНА", application_admin_kb(app_id, app["mode"], "pending"))
+    await add_admin_log(cb.from_user.id, "Отменил принятие", f"#{app_id}")
+    await safe_edit_app_message(cb.message, f"🔄 ВОЗВРАЩЕНА",
+                                application_admin_kb(app_id, app["mode"], "pending", app["user_id"]))
     await cb.answer("Возвращено")
 
 
@@ -912,7 +1053,9 @@ async def cancel_app(cb: CallbackQuery):
     except:
         pass
 
-    await safe_edit_app_message(cb.message, f"⏹ ОТМЕНЕНА", application_admin_kb(app_id, app["mode"], "cancelled"))
+    await add_admin_log(cb.from_user.id, "Отменил заявку", f"#{app_id}")
+    await safe_edit_app_message(cb.message, f"⏹ ОТМЕНЕНА",
+                                application_admin_kb(app_id, app["mode"], "cancelled", app["user_id"]))
     await cb.answer("Отменено")
 
 
@@ -933,8 +1076,9 @@ async def request_code(cb: CallbackQuery):
     except:
         return await cb.answer("Юзер заблокировал бота", show_alert=True)
 
+    await add_admin_log(cb.from_user.id, "Запросил код", f"#{app_id}")
     await safe_edit_app_message(cb.message, "💬 ЗАПРОШЕН КОД",
-                                application_admin_kb(app_id, app["mode"], "code_requested"))
+                                application_admin_kb(app_id, app["mode"], "code_requested", app["user_id"]))
     await cb.answer("Запрос отправлен")
 
 
@@ -974,7 +1118,7 @@ async def process_reject_reason(msg: Message, state: FSMContext):
     except:
         pass
 
-    # Чтобы не было дубля кнопок, отправляем новое сообщение-ответ
+    await add_admin_log(msg.from_user.id, "Отклонил заявку", f"#{app_id}: {msg.text.strip()}")
     await msg.answer(f"{E_FAIL_HTML} Заявка #{app_id} отклонена.")
 
 
@@ -983,7 +1127,8 @@ async def reject_back(cb: CallbackQuery):
     if not is_admin(cb.from_user.id): return
     app_id = int(cb.data.split(":")[1])
     app = await get_application(app_id)
-    await cb.message.edit_reply_markup(reply_markup=application_admin_kb(app_id, app["mode"], app["status"]))
+    await cb.message.edit_reply_markup(
+        reply_markup=application_admin_kb(app_id, app["mode"], app["status"], app["user_id"]))
     await cb.answer()
 
 
@@ -1017,8 +1162,9 @@ async def reject_with_reason(cb: CallbackQuery):
             pass
 
     reason_lbl = {"block": "Блок", "slet": "Не скан"}.get(reason, reason)
+    await add_admin_log(cb.from_user.id, "Отклонил заявку (QR)", f"#{app_id}: {reason_lbl}")
     await safe_edit_app_message(cb.message, f"{E_FAIL_HTML} ОТКЛОНЕНА ({reason_lbl})",
-                                application_admin_kb(app_id, app["mode"], "rejected"))
+                                application_admin_kb(app_id, app["mode"], "rejected", app["user_id"]))
     await cb.answer("Отклонено")
 
 
