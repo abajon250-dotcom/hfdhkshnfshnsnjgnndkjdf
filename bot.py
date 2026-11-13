@@ -73,7 +73,6 @@ def is_admin(uid: int) -> bool: return uid in ADMIN_IDS
 async def safe_edit_app_message(message: Message, new_status_text: str, reply_markup):
     try:
         if message.photo:
-            # Для фото перезаписываем подпись полностью, убирая старые кнопки и добавляя статус
             new_caption = f"{message.caption.split('Статус:')[0].strip()}\n\nСтатус: {new_status_text}"
             await message.edit_caption(caption=new_caption, reply_markup=reply_markup)
         else:
@@ -175,8 +174,8 @@ async def profile(msg: Message):
 
     text = (
         f"{E_PROFILE_HTML} <b>Мой профиль</b>\n\n"
-        f"💼 Баланс: <b>${total_earned:.2f}</b>\n"
-        f"├ Доступно: <b>${available:.2f}</b>\n"
+        f"{E_WALLET_HTML} <b>Баланс:</b> <b>${total_earned:.2f}</b>\n"
+        f"├ Доступно к выводу: <b>${available:.2f}</b>\n"
         f"├ На проверке: <b>${pending:.2f}</b>\n"
         f"└ Выведено: <b>${withdrawn:.2f}</b>\n\n"
         f"{E_STATS_HTML} <b>Статистика:</b>\n"
@@ -196,7 +195,7 @@ async def audit_log(cb: CallbackQuery):
     if not apps:
         return await cb.answer("У вас пока нет заявок.", show_alert=True)
 
-    text = "📋 <b>Журнал заявок (последние 10):</b>\n\n"
+    text = f"{E_ORDER_HTML} <b>Журнал заявок (последние 10):</b>\n\n"
     for a in apps:
         status = {"pending": "⏳ В ожидании", "accepted": "✅ Принято", "rejected": "❌ Отклонено"}.get(a['status'],
                                                                                                      a['status'])
@@ -213,7 +212,7 @@ async def withdraw_history(cb: CallbackQuery):
     if not wds:
         return await cb.answer("У вас пока нет выплат.", show_alert=True)
 
-    text = "💸 <b>История выплат:</b>\n\n"
+    text = f"{E_MONEY_HTML} <b>История выплат:</b>\n\n"
     for w in wds:
         status = "✅ Выплачено" if w['status'] == 'completed' else "⏳ В обработке"
         date = w['created_at'].split('.')[0]
@@ -467,7 +466,6 @@ async def receive_number(msg: Message, state: FSMContext):
 
     phone = msg.text.strip()
 
-    # Проверка на спам (уже был принят)
     if await check_number_already_accepted("number", phone):
         return await msg.answer(f"{E_FAIL_HTML} Этот номер уже был сдан и оплачен. Нельзя сдавать повторно.")
 
@@ -536,7 +534,6 @@ async def user_write_code(cb: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data == "user_cancel_code")
 async def user_cancel_code(cb: CallbackQuery):
-    # Находим последнюю заявку со статусом code_requested и отменяем ее
     app = await get_app_awaiting_code(cb.from_user.id)
     if app:
         await update_app(app["id"], status="cancelled", awaiting_code=0)
@@ -926,7 +923,6 @@ async def request_code(cb: CallbackQuery):
     app = await get_application(app_id)
     await update_app(app_id, status="code_requested", awaiting_code=1)
 
-    # ОТПРАВЛЯЕМ ПОЛЬЗОВАТЕЛЮ СООБЩЕНИЕ С КНОПКАМИ
     try:
         await bot.send_message(
             app["user_id"],
@@ -978,9 +974,7 @@ async def process_reject_reason(msg: Message, state: FSMContext):
     except:
         pass
 
-    # ОБНОВЛЯЕМ СООБЩЕНИЕ В ЧАТЕ
-    app_msg = await bot.send_message(ADMIN_GROUP_ID, "Обновление статуса...")  # Заглушка
-    await app_msg.delete()
+    # Чтобы не было дубля кнопок, отправляем новое сообщение-ответ
     await msg.answer(f"{E_FAIL_HTML} Заявка #{app_id} отклонена.")
 
 

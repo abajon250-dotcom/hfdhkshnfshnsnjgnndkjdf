@@ -103,11 +103,12 @@ def operators_kb(operators, mode, active_category='regular'):
     return kb.as_markup()
 
 
+# ОБНОВЛЕННАЯ КЛАВИАТУРА ПРОФИЛЯ С ЭМОДЗИ
 def profile_kb():
     kb = InlineKeyboardBuilder()
     kb.button(text="Вывести средства", callback_data="withdraw", icon_custom_emoji_id=E_WALLET)
-    kb.button(text="📋 Журнал заявок", callback_data="audit_log")
-    kb.button(text="💸 История выплат", callback_data="withdraw_history")
+    kb.button(text="Журнал заявок", callback_data="audit_log", icon_custom_emoji_id=E_ORDER)
+    kb.button(text="История выплат", callback_data="withdraw_history", icon_custom_emoji_id=E_MONEY)
     kb.adjust(1, 2)
     return kb.as_markup()
 
@@ -165,7 +166,7 @@ def application_admin_kb(app_id, mode, status='pending'):
 
 def reject_reason_kb(app_id):
     kb = InlineKeyboardBuilder()
-    kb.button(text="Не скан", callback_data=f"adm_reason:{app_id}:slet", style="danger")  # СМЕНИЛ СЛЕТ НА НЕ СКАН
+    kb.button(text="Не скан", callback_data=f"adm_reason:{app_id}:slet", style="danger")
     kb.button(text="Блок", callback_data=f"adm_reason:{app_id}:block", style="danger", icon_custom_emoji_id=E_BLOCK)
     kb.button(text="Назад", callback_data=f"adm_back:{app_id}")
     kb.adjust(2, 1)
@@ -178,7 +179,7 @@ def admin_panel_kb():
     kb.button(text="Сменить цену", callback_data="adm_change_price_mode", icon_custom_emoji_id=E_WALLET)
     kb.button(text="Статистика", callback_data="adm_stats_menu", icon_custom_emoji_id=E_STATS)
     kb.button(text="Рассылка", callback_data="adm_broadcast", icon_custom_emoji_id=E_BROADCAST)
-    kb.button(text="💸 Заявки на вывод", callback_data="adm_withdrawals")
+    kb.button(text="Заявки на вывод", callback_data="adm_withdrawals", icon_custom_emoji_id=E_MONEY)
     kb.button(text="▶️ Начать ворк", callback_data="adm_start_all", style="success", icon_custom_emoji_id=E_SUCCESS)
     kb.button(text="⏹ Стоп-ворк", callback_data="adm_stop_all", style="danger", icon_custom_emoji_id=E_NOT_ACCEPT)
     kb.button(text="Закрыть", callback_data="close_admin", icon_custom_emoji_id=E_FAIL)
