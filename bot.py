@@ -397,8 +397,7 @@ async def start_work(msg: Message, state: FSMContext):
     if await is_user_banned(msg.from_user.id):
         return await msg.answer("⛔ Вы заблокированы.")
 
-    if await check_active_app(msg.from_user.id):
-        return await msg.answer(f"{E_FAIL_HTML} У вас уже есть активная заявка на проверке. Дождитесь ее завершения.")
+    # УБРАЛИ БЛОКИРОВКУ ПО АКТИВНОЙ ЗАЯВКЕ
 
     await state.set_state(WorkStates.choosing_operator)
     await state.update_data(mode="number")
@@ -615,7 +614,6 @@ async def adm_export_csv(cb: CallbackQuery):
     if not is_admin(cb.from_user.id): return
     await cb.answer("Генерирую файлы...")
 
-    # Заявки
     apps = await get_all_apps_export()
     output_apps = io.StringIO()
     writer = csv.writer(output_apps)
@@ -623,7 +621,6 @@ async def adm_export_csv(cb: CallbackQuery):
     for a in apps:
         writer.writerow(a)
 
-    # Выплаты
     wds = await get_all_withdrawals_export()
     output_wds = io.StringIO()
     writer2 = csv.writer(output_wds)
@@ -631,7 +628,6 @@ async def adm_export_csv(cb: CallbackQuery):
     for w in wds:
         writer2.writerow(w)
 
-    # Отправка
     await cb.message.answer_document(
         BufferedInputFile(output_apps.getvalue().encode('utf-8-sig'), filename="applications.csv"),
         caption="📥 Экспорт: Заявки")
@@ -805,7 +801,6 @@ async def op_toggle(cb: CallbackQuery):
     _, op_id, field = cb.data.split(":")
     op_id = int(op_id)
 
-    # Получаем состояние ДО изменения
     old_op = await get_operator(op_id)
     was_off = not old_op[field]
 
@@ -815,7 +810,6 @@ async def op_toggle(cb: CallbackQuery):
     await cb.message.edit_reply_markup(reply_markup=operator_edit_kb(op))
     await cb.answer("Изменено")
 
-    # Если включили - рассылаем уведомления
     if was_off and op[field]:
         subs = await get_operator_subs(op_id)
         if subs:
@@ -1006,7 +1000,7 @@ async def accept(cb: CallbackQuery):
 
     await add_admin_log(cb.from_user.id, "Принял заявку", f"#{app_id} (${price:.2f})")
     await safe_edit_app_message(cb.message, f"{E_SUCCESS_HTML} ПРИНЯТА",
-                                application_admin_kb(app_id, app["mode"], "accepted"))
+                                application_admin_kb(app_id, app["mode"], "accepted", app["user_id"]))
     await cb.answer("Принято")
 
 
