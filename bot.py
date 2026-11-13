@@ -397,8 +397,6 @@ async def start_work(msg: Message, state: FSMContext):
     if await is_user_banned(msg.from_user.id):
         return await msg.answer("⛔ Вы заблокированы.")
 
-    # УБРАЛИ БЛОКИРОВКУ ПО АКТИВНОЙ ЗАЯВКЕ
-
     await state.set_state(WorkStates.choosing_operator)
     await state.update_data(mode="number")
 
@@ -589,13 +587,23 @@ async def panel_msg(msg: Message, state: FSMContext):
     await state.clear()
     if not is_admin(msg.from_user.id):
         return await msg.answer(f"⛔ У вас нет доступа.\nВаш ID: <code>{msg.from_user.id}</code>")
-    await msg.answer("👑 <b>Админ-панель</b>", reply_markup=admin_panel_kb())
+
+    auto_work = await get_setting("auto_work")
+    status = "🟢 Включен" if auto_work == "1" else "🔴 Отключен (ручной режим)"
+
+    await msg.answer(f"👑 <b>Админ-панель</b>\n\n<i>Авто-график (06:00-19:00): {status}</i>",
+                     reply_markup=admin_panel_kb())
 
 
 @dp.callback_query(F.data == "admin_panel")
 async def back_to_admin(cb: CallbackQuery):
     if not is_admin(cb.from_user.id): return
-    await cb.message.edit_text("👑 <b>Админ-панель</b>", reply_markup=admin_panel_kb())
+
+    auto_work = await get_setting("auto_work")
+    status = "🟢 Включен" if auto_work == "1" else "🔴 Отключен (ручной режим)"
+
+    await cb.message.edit_text(f"👑 <b>Админ-панель</b>\n\n<i>Авто-график (06:00-19:00): {status}</i>",
+                               reply_markup=admin_panel_kb())
     await cb.answer()
 
 
@@ -826,21 +834,25 @@ async def op_toggle(cb: CallbackQuery):
 @dp.callback_query(F.data == "adm_start_all")
 async def adm_start_all(cb: CallbackQuery):
     if not is_admin(cb.from_user.id): return
+    await set_setting("auto_work", "1")  # Включаем авто-график обратно
     await start_all_operators()
-    await add_admin_log(cb.from_user.id, "Начало ворка (Все вкл)", "Глобально")
-    await cb.answer("Все операторы включены (Начало ворка)!", show_alert=True)
-    await cb.message.edit_text("👑 <b>Админ-панель</b>\n\n✅ <i>Все операторы включены!</i>",
-                               reply_markup=admin_panel_kb())
+    await add_admin_log(cb.from_user.id, "Начало ворка (Все вкл)", "Авто-график: Вкл")
+    await cb.answer("Все операторы включены! Авто-график включен.", show_alert=True)
+    await cb.message.edit_text(
+        "👑 <b>Админ-панель</b>\n\n✅ <i>Все операторы включены! Авто-график (06:00-19:00) активен.</i>",
+        reply_markup=admin_panel_kb())
 
 
 @dp.callback_query(F.data == "adm_stop_all")
 async def adm_stop_all(cb: CallbackQuery):
     if not is_admin(cb.from_user.id): return
+    await set_setting("auto_work", "0")  # ОТКЛЮЧАЕМ АВТО-ГРАФИК
     await stop_all_operators()
-    await add_admin_log(cb.from_user.id, "Стоп-ворк (Все выкл)", "Глобально")
-    await cb.answer("Все операторы выключены (Стоп-ворк)!", show_alert=True)
-    await cb.message.edit_text("👑 <b>Админ-панель</b>\n\n⏹ <i>Все операторы выключены!</i>",
-                               reply_markup=admin_panel_kb())
+    await add_admin_log(cb.from_user.id, "Стоп-ворк (Все выкл)", "Авто-график: Выкл")
+    await cb.answer("Стоп-ворк! Авто-график отключен. Бот больше не включит операторов сам.", show_alert=True)
+    await cb.message.edit_text(
+        "👑 <b>Админ-панель</b>\n\n⏹ <i>Стоп-ворк! Авто-график ОТКЛЮЧЕН. Операторы будут выключены, пока вы не нажмете «Начать ворк».</i>",
+        reply_markup=admin_panel_kb())
 
 
 @dp.callback_query(F.data == "adm_run_payouts")
@@ -1180,22 +1192,26 @@ async def payout_worker():
         await asyncio.sleep(30)
 
 
+# --- ПЛАНИРОВЩИК С ПРОВЕРКОЙ АВТО-ВОРКА ---
 async def work_scheduler():
     while True:
         try:
-            now_utc = datetime.utcnow()
-            now_msk = now_utc + timedelta(hours=3)
+            auto_work = await get_setting("auto_work")
+            if auto_work == "1":
+                now_utc = datetime.utcnow()
+                now_msk = now_utc + timedelta(hours=3)
 
-            if 6 <= now_msk.hour < 19:
-                ops = await get_operators()
-                if not any(op["number_active"] or op["qr_active"] for op in ops):
-                    await start_all_operators()
-                    logging.info("Авто-ворк: операторы включены (06:00+)")
-            else:
-                ops = await get_operators()
-                if any(op["number_active"] or op["qr_active"] for op in ops):
-                    await stop_all_operators()
-                    logging.info("Авто-ворк: операторы выключены (19:00+)")
+                if 6 <= now_msk.hour < 19:
+                    ops = await get_operators()
+                    if not any(op["number_active"] or op["qr_active"] for op in ops):
+                        await start_all_operators()
+                        logging.info("Авто-ворк: операторы включены (06:00+)")
+                else:
+                    ops = await get_operators()
+                    if any(op["number_active"] or op["qr_active"] for op in ops):
+                        await stop_all_operators()
+                        logging.info("Авто-ворк: операторы выключены (19:00+)")
+            # Если auto_work == 0, ничего не делаем
         except Exception:
             logging.exception("work_scheduler error")
         await asyncio.sleep(60)

@@ -42,7 +42,13 @@ async def init_db():
         CREATE TABLE IF NOT EXISTS operator_subs (
             user_id INTEGER, operator_id INTEGER, PRIMARY KEY(user_id, operator_id)
         );
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY, value TEXT
+        );
         """)
+
+        # Устанавливаем авто-ворк по умолчанию в положение "Вкл"
+        await db.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('auto_work', '1')")
 
         cur = await db.execute("SELECT COUNT(*) FROM operators")
         if (await cur.fetchone())[0] == 0:
@@ -69,6 +75,20 @@ async def init_db():
                     "INSERT INTO operators (name, emoji_id, price_number, price_qr, supports_number, supports_qr, number_active, qr_active, category) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (name, eid, p_num, p_qr, s_num, s_qr, n_act, q_act, cat)
                 )
+        await db.commit()
+
+
+# --- НАСТРОЙКИ ---
+async def get_setting(key):
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT value FROM settings WHERE key=?", (key,)) as c:
+            row = await c.fetchone()
+            return row[0] if row else None
+
+
+async def set_setting(key, value):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, value))
         await db.commit()
 
 
@@ -145,7 +165,6 @@ async def start_all_operators():
         await db.commit()
 
 
-# --- БАНЫ ---
 async def ban_user(user_id, reason="Нарушение правил"):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("INSERT OR REPLACE INTO banned_users (user_id, reason) VALUES (?, ?)", (user_id, reason))
@@ -164,7 +183,6 @@ async def is_user_banned(user_id) -> bool:
             return (await c.fetchone()) is not None
 
 
-# --- ЛОГИ ---
 async def add_admin_log(admin_id, action, target):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("INSERT INTO admin_logs (admin_id, action, target) VALUES (?, ?, ?)",
@@ -179,7 +197,6 @@ async def get_admin_logs(limit=20):
             return await c.fetchall()
 
 
-# --- ПОДПИСКИ НА ОПЕРАТОРОВ ---
 async def sub_to_operator(user_id, op_id):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("INSERT OR IGNORE INTO operator_subs (user_id, operator_id) VALUES (?, ?)", (user_id, op_id))
@@ -198,7 +215,6 @@ async def clear_operator_subs(op_id):
         await db.commit()
 
 
-# --- ЭКСПОРТ В CSV ---
 async def get_all_apps_export():
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("""
@@ -223,7 +239,6 @@ async def get_all_withdrawals_export():
             return await c.fetchall()
 
 
-# --- АНТИ-СПАМ ---
 async def check_active_app(user_id):
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
@@ -242,7 +257,6 @@ async def check_number_already_accepted(mode, number):
             return (await c.fetchone())[0] > 0
 
 
-# --- ЗАЯВКИ ---
 async def create_application(**kw):
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute("""
@@ -310,7 +324,6 @@ async def try_payout(app_id) -> bool:
         return cur.rowcount == 1
 
 
-# --- ИСТОРИЯ ---
 async def get_user_applications(user_id):
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
@@ -332,7 +345,6 @@ async def get_total_withdrawn(user_id):
             return (await c.fetchone())[0]
 
 
-# --- ТИКЕТЫ ---
 async def create_ticket(user_id, message):
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute("INSERT INTO tickets (user_id, message) VALUES (?, ?)", (user_id, message))
@@ -366,7 +378,6 @@ async def close_ticket(ticket_id):
         await db.commit()
 
 
-# --- ВЫВОДЫ ---
 async def create_withdrawal(user_id, amount):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("INSERT INTO withdrawals (user_id, amount) VALUES (?, ?)", (user_id, amount))
@@ -387,7 +398,6 @@ async def approve_withdrawal(w_id):
         await db.commit()
 
 
-# --- СТАТИСТИКА ---
 async def stats_today():
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("""
