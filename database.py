@@ -1,7 +1,5 @@
 import aiosqlite
-
 DB_PATH = "bot.db"
-
 
 async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
@@ -34,7 +32,7 @@ async def init_db():
             status TEXT DEFAULT 'pending', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         """)
-
+        
         cur = await db.execute("SELECT COUNT(*) FROM operators")
         if (await cur.fetchone())[0] == 0:
             ops = [
@@ -57,18 +55,16 @@ async def init_db():
             ]
             for name, eid, p_num, p_qr, s_num, s_qr, n_act, q_act, cat in ops:
                 await db.execute(
-                    "INSERT INTO operators (name, emoji_id, price_number, price_qr, supports_number, supports_qr, number_active, qr_active, category) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO operators (name, emoji_id, price_number, price_qr, supports_number, supports_qr, number_active, qr_active, category) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", 
                     (name, eid, p_num, p_qr, s_num, s_qr, n_act, q_act, cat)
                 )
         await db.commit()
-
 
 async def get_user(user_id):
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute("SELECT * FROM users WHERE user_id=?", (user_id,)) as c:
             return await c.fetchone()
-
 
 async def create_user(user_id, username, full_name, referrer_id=None):
     async with aiosqlite.connect(DB_PATH) as db:
@@ -78,12 +74,10 @@ async def create_user(user_id, username, full_name, referrer_id=None):
         """, (user_id, username, full_name, referrer_id))
         await db.commit()
 
-
 async def add_balance(user_id, amount):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE users SET balance = balance + ? WHERE user_id=?", (amount, user_id))
         await db.commit()
-
 
 async def increment_orders(user_id, success: bool, amount: int = 1):
     field = "successful_orders" if success else "failed_orders"
@@ -91,13 +85,11 @@ async def increment_orders(user_id, success: bool, amount: int = 1):
         await db.execute(f"UPDATE users SET {field} = MAX(0, {field} + ?) WHERE user_id=?", (amount, user_id))
         await db.commit()
 
-
 async def get_operators():
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute("SELECT * FROM operators ORDER BY id") as c:
             return await c.fetchall()
-
 
 async def get_operator(op_id):
     async with aiosqlite.connect(DB_PATH) as db:
@@ -105,55 +97,50 @@ async def get_operator(op_id):
         async with db.execute("SELECT * FROM operators WHERE id=?", (op_id,)) as c:
             return await c.fetchone()
 
-
 async def update_operator_price(op_id, field, value):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(f"UPDATE operators SET {field}=? WHERE id=?", (value, op_id))
         await db.commit()
 
+async def update_operator_name(op_id, name):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE operators SET name=? WHERE id=?", (name, op_id))
+        await db.commit()
 
 async def toggle_operator(op_id, field):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(f"UPDATE operators SET {field} = 1 - {field} WHERE id=?", (op_id,))
         await db.commit()
 
-
 async def stop_all_operators():
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE operators SET number_active=0, qr_active=0")
         await db.commit()
-
 
 async def start_all_operators():
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE operators SET number_active=1, qr_active=1")
         await db.commit()
 
-
 async def create_application(**kw):
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute("""
             INSERT INTO applications (user_id, operator_id, mode, phone_number, qr_photo_id, qr_number)
             VALUES (?,?,?,?,?,?)
-        """, (kw['user_id'], kw['operator_id'], kw['mode'], kw.get('phone_number'), kw.get('qr_photo_id'),
-              kw.get('qr_number')))
+        """, (kw['user_id'], kw['operator_id'], kw['mode'], kw.get('phone_number'), kw.get('qr_photo_id'), kw.get('qr_number')))
         await db.commit()
         return cur.lastrowid
 
-
 async def set_admin_message(app_id, chat_id, msg_id):
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("UPDATE applications SET admin_chat_id=?, admin_message_id=? WHERE id=?",
-                         (chat_id, msg_id, app_id))
+        await db.execute("UPDATE applications SET admin_chat_id=?, admin_message_id=? WHERE id=?", (chat_id, msg_id, app_id))
         await db.commit()
-
 
 async def get_application(app_id):
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute("SELECT * FROM applications WHERE id=?", (app_id,)) as c:
             return await c.fetchone()
-
 
 async def update_app(app_id, **fields):
     if not fields: return
@@ -163,23 +150,17 @@ async def update_app(app_id, **fields):
         await db.execute(f"UPDATE applications SET {keys} WHERE id=?", vals)
         await db.commit()
 
-
 async def get_app_awaiting_code(user_id):
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
-        async with db.execute(
-                "SELECT * FROM applications WHERE user_id=? AND awaiting_code=1 AND status='code_requested' ORDER BY id DESC LIMIT 1",
-                (user_id,)) as c:
+        async with db.execute("SELECT * FROM applications WHERE user_id=? AND awaiting_code=1 AND status='code_requested' ORDER BY id DESC LIMIT 1", (user_id,)) as c:
             return await c.fetchone()
-
 
 async def pending_payouts():
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
-        async with db.execute(
-                "SELECT * FROM applications WHERE status='accepted' AND payout_at IS NOT NULL AND payout_at <= datetime('now')") as c:
+        async with db.execute("SELECT * FROM applications WHERE status='accepted' AND payout_at IS NOT NULL AND payout_at <= datetime('now')") as c:
             return await c.fetchall()
-
 
 async def get_all_pending_payouts():
     async with aiosqlite.connect(DB_PATH) as db:
@@ -187,15 +168,11 @@ async def get_all_pending_payouts():
         async with db.execute("SELECT * FROM applications WHERE status='accepted' AND payout_at IS NOT NULL") as c:
             return await c.fetchall()
 
-
 async def try_payout(app_id) -> bool:
     async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute(
-            "UPDATE applications SET payout_at=NULL WHERE id=? AND status='accepted' AND payout_at IS NOT NULL",
-            (app_id,))
+        cur = await db.execute("UPDATE applications SET payout_at=NULL WHERE id=? AND status='accepted' AND payout_at IS NOT NULL", (app_id,))
         await db.commit()
         return cur.rowcount == 1
-
 
 # --- ТИКЕТЫ ---
 async def create_ticket(user_id, message):
@@ -204,13 +181,11 @@ async def create_ticket(user_id, message):
         await db.commit()
         return cur.lastrowid
 
-
 async def get_user_tickets(user_id):
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute("SELECT * FROM tickets WHERE user_id=? ORDER BY id DESC", (user_id,)) as c:
             return await c.fetchall()
-
 
 async def get_ticket(ticket_id):
     async with aiosqlite.connect(DB_PATH) as db:
@@ -218,18 +193,15 @@ async def get_ticket(ticket_id):
         async with db.execute("SELECT * FROM tickets WHERE id=?", (ticket_id,)) as c:
             return await c.fetchone()
 
-
 async def reply_ticket(ticket_id, reply_text):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE tickets SET reply=? WHERE id=?", (reply_text, ticket_id))
         await db.commit()
 
-
 async def close_ticket(ticket_id):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE tickets SET status='closed' WHERE id=?", (ticket_id,))
         await db.commit()
-
 
 # --- ВЫВОДЫ ---
 async def create_withdrawal(user_id, amount):
@@ -238,19 +210,16 @@ async def create_withdrawal(user_id, amount):
         await db.execute("UPDATE users SET balance = balance - ? WHERE user_id=?", (amount, user_id))
         await db.commit()
 
-
 async def get_pending_withdrawals():
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute("SELECT * FROM withdrawals WHERE status='pending'") as c:
             return await c.fetchall()
 
-
 async def approve_withdrawal(w_id):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE withdrawals SET status='completed' WHERE id=?", (w_id,))
         await db.commit()
-
 
 # --- СТАТИСТИКА ---
 async def stats_today():
@@ -263,32 +232,17 @@ async def stats_today():
         """) as c:
             return await c.fetchone()
 
-
 async def stats_total():
     async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT COUNT(*) FROM users") as c:
-            users = (await c.fetchone())[0]
-
-        # Считаем сумму всех ПРИНЯТЫХ заявок за все время
-        async with db.execute("""
-            SELECT COALESCE(SUM(CASE WHEN a.mode='number' THEN o.price_number ELSE o.price_qr END), 0)
-            FROM applications a 
-            JOIN operators o ON o.id = a.operator_id 
-            WHERE a.status = 'accepted'
-        """) as c:
-            total_earned = (await c.fetchone())[0]
-
-        async with db.execute("SELECT COUNT(*) FROM applications") as c:
-            apps = (await c.fetchone())[0]
-
-        return users, total_earned, apps
-
+        async with db.execute("SELECT COUNT(*) FROM users") as c: users = (await c.fetchone())[0]
+        async with db.execute("SELECT COALESCE(SUM(balance),0) FROM users") as c: balance = (await c.fetchone())[0]
+        async with db.execute("SELECT COUNT(*) FROM applications") as c: apps = (await c.fetchone())[0]
+        return users, balance, apps
 
 async def all_user_ids():
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT user_id FROM users") as c:
             return [r[0] for r in await c.fetchall()]
-
 
 async def pending_amount(user_id):
     async with aiosqlite.connect(DB_PATH) as db:
