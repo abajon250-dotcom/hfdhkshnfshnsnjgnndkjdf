@@ -159,7 +159,7 @@ async def check_sub(cb: CallbackQuery):
     await cb.answer()
 
 
-# --- ПРОФИЛЬ ---
+# --- ПРОФИЛЬ (ИСПРАВЛЕН) ---
 @dp.message(F.text.contains("Мой профиль"))
 async def profile(msg: Message):
     if await is_user_banned(msg.from_user.id):
@@ -168,10 +168,13 @@ async def profile(msg: Message):
     u = await get_user(msg.from_user.id)
     if not u: return await msg.answer("Нажми /start.")
 
-    pending = await pending_amount(msg.from_user.id)
-    available = u['balance']
-    withdrawn = await get_total_withdrawn(msg.from_user.id)
-    total_earned = available + pending + withdrawn
+    pending_apps = await pending_amount(msg.from_user.id)  # На проверке
+    available = u['balance']  # Доступно к выводу
+    pending_wd = await get_pending_withdrawn(msg.from_user.id)  # На выводе (pending заявки)
+    withdrawn = await get_total_withdrawn(msg.from_user.id)  # Выведено (completed)
+    fines = await get_total_fines(msg.from_user.id)  # Штрафы
+
+    total_earned = available + pending_apps + pending_wd + withdrawn + fines
 
     created_raw = u['created_at']
     try:
@@ -184,10 +187,12 @@ async def profile(msg: Message):
 
     text = (
         f"{E_PROFILE_HTML} <b>Мой профиль</b>\n\n"
-        f"{E_WALLET_HTML} <b>Баланс:</b> <b>${total_earned:.2f}</b>\n"
+        f"{E_WALLET_HTML} <b>Заработано:</b> <b>${total_earned:.2f}</b>\n"
         f"├ Доступно к выводу: <b>${available:.2f}</b>\n"
-        f"├ На проверке: <b>${pending:.2f}</b>\n"
-        f"└ Выведено: <b>${withdrawn:.2f}</b>\n\n"
+        f"├ На проверке: <b>${pending_apps:.2f}</b>\n"
+        f"├ На выводе: <b>${pending_wd:.2f}</b>\n"
+        f"├ Выведено: <b>${withdrawn:.2f}</b>\n"
+        f"└ Штрафы (блоки): <b>${fines:.2f}</b>\n\n"
         f"{E_STATS_HTML} <b>Статистика:</b>\n"
         f"{E_SUCCESS_HTML} Успешно: <b>{u['successful_orders']}</b>\n"
         f"{E_FAIL_HTML} Неуспешно: <b>{u['failed_orders']}</b>\n"
@@ -834,7 +839,7 @@ async def op_toggle(cb: CallbackQuery):
 @dp.callback_query(F.data == "adm_start_all")
 async def adm_start_all(cb: CallbackQuery):
     if not is_admin(cb.from_user.id): return
-    await set_setting("auto_work", "1")  # Включаем авто-график обратно
+    await set_setting("auto_work", "1")
     await start_all_operators()
     await add_admin_log(cb.from_user.id, "Начало ворка (Все вкл)", "Авто-график: Вкл")
     await cb.answer("Все операторы включены! Авто-график включен.", show_alert=True)
@@ -846,7 +851,7 @@ async def adm_start_all(cb: CallbackQuery):
 @dp.callback_query(F.data == "adm_stop_all")
 async def adm_stop_all(cb: CallbackQuery):
     if not is_admin(cb.from_user.id): return
-    await set_setting("auto_work", "0")  # ОТКЛЮЧАЕМ АВТО-ГРАФИК
+    await set_setting("auto_work", "0")
     await stop_all_operators()
     await add_admin_log(cb.from_user.id, "Стоп-ворк (Все выкл)", "Авто-график: Выкл")
     await cb.answer("Стоп-ворк! Авто-график отключен. Бот больше не включит операторов сам.", show_alert=True)
@@ -1192,7 +1197,6 @@ async def payout_worker():
         await asyncio.sleep(30)
 
 
-# --- ПЛАНИРОВЩИК С ПРОВЕРКОЙ АВТО-ВОРКА ---
 async def work_scheduler():
     while True:
         try:
@@ -1211,7 +1215,6 @@ async def work_scheduler():
                     if any(op["number_active"] or op["qr_active"] for op in ops):
                         await stop_all_operators()
                         logging.info("Авто-ворк: операторы выключены (19:00+)")
-            # Если auto_work == 0, ничего не делаем
         except Exception:
             logging.exception("work_scheduler error")
         await asyncio.sleep(60)

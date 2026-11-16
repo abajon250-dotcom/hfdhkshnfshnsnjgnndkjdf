@@ -1,5 +1,4 @@
 import aiosqlite
-from datetime import datetime
 
 DB_PATH = "bot.db"
 
@@ -10,7 +9,7 @@ async def init_db():
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY, username TEXT, full_name TEXT, balance REAL DEFAULT 0,
             referrer_id INTEGER, successful_orders INTEGER DEFAULT 0, failed_orders INTEGER DEFAULT 0,
-            last_reject_time TIMESTAMP, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         CREATE TABLE IF NOT EXISTS operators (
             id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, emoji_id TEXT,
@@ -32,15 +31,13 @@ async def init_db():
         );
         CREATE TABLE IF NOT EXISTS withdrawals (
             id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, amount REAL,
-            status TEXT DEFAULT 'pending', check_url TEXT, reject_reason TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            status TEXT DEFAULT 'pending', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         CREATE TABLE IF NOT EXISTS banned_users (
             user_id INTEGER PRIMARY KEY, reason TEXT, banned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         CREATE TABLE IF NOT EXISTS admin_logs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, admin_id INTEGER, action TEXT, target TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            id INTEGER PRIMARY KEY AUTOINCREMENT, admin_id INTEGER, action TEXT, target TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         CREATE TABLE IF NOT EXISTS operator_subs (
             user_id INTEGER, operator_id INTEGER, PRIMARY KEY(user_id, operator_id)
@@ -49,13 +46,8 @@ async def init_db():
             key TEXT PRIMARY KEY, value TEXT
         );
         """)
-        defaults = {
-            "min_withdraw": "5.0",
-            "support_link": "https://t.me/your_support",
-            "auto_work": "1"
-        }
-        for k, v in defaults.items():
-            await db.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (k, v))
+
+        await db.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('auto_work', '1')")
 
         cur = await db.execute("SELECT COUNT(*) FROM operators")
         if (await cur.fetchone())[0] == 0:
@@ -85,7 +77,6 @@ async def init_db():
         await db.commit()
 
 
-# --- SETTINGS ---
 async def get_setting(key):
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT value FROM settings WHERE key=?", (key,)) as c:
@@ -95,11 +86,10 @@ async def get_setting(key):
 
 async def set_setting(key, value):
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, str(value)))
+        await db.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, value))
         await db.commit()
 
 
-# --- USERS ---
 async def get_user(user_id):
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
@@ -122,27 +112,13 @@ async def add_balance(user_id, amount):
         await db.commit()
 
 
-async def update_last_reject(user_id):
-    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("UPDATE users SET last_reject_time=? WHERE user_id=?", (now, user_id))
-        await db.commit()
-
-
 async def increment_orders(user_id, success: bool, amount: int = 1):
-    f = "successful_orders" if success else "failed_orders"
+    field = "successful_orders" if success else "failed_orders"
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(f"UPDATE users SET {f} = MAX(0, {f} + ?) WHERE user_id=?", (amount, user_id))
+        await db.execute(f"UPDATE users SET {field} = MAX(0, {field} + ?) WHERE user_id=?", (amount, user_id))
         await db.commit()
 
 
-async def all_user_ids():
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT user_id FROM users") as c:
-            return [r[0] for r in await c.fetchall()]
-
-
-# --- OPERATORS ---
 async def get_operators():
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
@@ -187,6 +163,38 @@ async def start_all_operators():
         await db.commit()
 
 
+async def ban_user(user_id, reason="Нарушение правил"):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("INSERT OR REPLACE INTO banned_users (user_id, reason) VALUES (?, ?)", (user_id, reason))
+        await db.commit()
+
+
+async def unban_user(user_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM banned_users WHERE user_id=?", (user_id,))
+        await db.commit()
+
+
+async def is_user_banned(user_id) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT 1 FROM banned_users WHERE user_id=?", (user_id,)) as c:
+            return (await c.fetchone()) is not None
+
+
+async def add_admin_log(admin_id, action, target):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("INSERT INTO admin_logs (admin_id, action, target) VALUES (?, ?, ?)",
+                         (admin_id, action, target))
+        await db.commit()
+
+
+async def get_admin_logs(limit=20):
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM admin_logs ORDER BY id DESC LIMIT ?", (limit,)) as c:
+            return await c.fetchall()
+
+
 async def sub_to_operator(user_id, op_id):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("INSERT OR IGNORE INTO operator_subs (user_id, operator_id) VALUES (?, ?)", (user_id, op_id))
@@ -205,14 +213,45 @@ async def clear_operator_subs(op_id):
         await db.commit()
 
 
-# --- APPLICATIONS ---
+async def get_all_apps_export():
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("""
+            SELECT a.id, a.user_id, u.username, a.mode, COALESCE(a.phone_number, a.qr_number) as val, 
+                   o.name, a.status, a.created_at, a.processed_at
+            FROM applications a 
+            JOIN operators o ON o.id = a.operator_id
+            LEFT JOIN users u ON u.user_id = a.user_id
+            ORDER BY a.id DESC
+        """) as c:
+            return await c.fetchall()
+
+
+async def get_all_withdrawals_export():
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("""
+            SELECT w.id, w.user_id, u.username, w.amount, w.status, w.created_at
+            FROM withdrawals w
+            LEFT JOIN users u ON u.user_id = w.user_id
+            ORDER BY w.id DESC
+        """) as c:
+            return await c.fetchall()
+
+
+async def check_active_app(user_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+                "SELECT COUNT(*) FROM applications WHERE user_id=? AND status IN ('pending', 'code_requested', 'code_sent')",
+                (user_id,)) as c:
+            return (await c.fetchone())[0] > 0
+
+
 async def check_number_already_accepted(mode, number):
     async with aiosqlite.connect(DB_PATH) as db:
         if mode == "number":
-            q = "SELECT COUNT(*) FROM applications WHERE mode='number' AND phone_number=? AND status IN ('pending','accepted','code_requested','code_sent')"
+            query = "SELECT COUNT(*) FROM applications WHERE mode='number' AND phone_number=? AND status='accepted'"
         else:
-            q = "SELECT COUNT(*) FROM applications WHERE mode='qr' AND qr_number=? AND status IN ('pending','accepted','code_requested','code_sent')"
-        async with db.execute(q, (number,)) as c:
+            query = "SELECT COUNT(*) FROM applications WHERE mode='qr' AND qr_number=? AND status='accepted'"
+        async with db.execute(query, (number,)) as c:
             return (await c.fetchone())[0] > 0
 
 
@@ -290,52 +329,11 @@ async def get_user_applications(user_id):
             return await c.fetchall()
 
 
-# --- WITHDRAWALS ---
-async def create_withdrawal(user_id, amount):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("INSERT INTO withdrawals (user_id, amount) VALUES (?, ?)", (user_id, amount))
-        await db.execute("UPDATE users SET balance = balance - ? WHERE user_id=?", (amount, user_id))
-        await db.commit()
-
-
-async def get_pending_withdrawals():
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute("SELECT * FROM withdrawals WHERE status='pending'") as c:
-            return await c.fetchall()
-
-
-async def get_withdrawal(w_id):
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute("SELECT * FROM withdrawals WHERE id=?", (w_id,)) as c:
-            return await c.fetchone()
-
-
-async def approve_withdrawal(w_id, check_url):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("UPDATE withdrawals SET status='completed', check_url=? WHERE id=?", (check_url, w_id))
-        await db.commit()
-
-
-async def cancel_withdrawal(w_id, reason="Отменено администратором"):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("UPDATE withdrawals SET status='cancelled', reject_reason=? WHERE id=?", (reason, w_id))
-        await db.commit()
-
-
 async def get_user_withdrawals(user_id):
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute("SELECT * FROM withdrawals WHERE user_id=? ORDER BY id DESC LIMIT 10", (user_id,)) as c:
             return await c.fetchall()
-
-
-async def get_pending_withdrawn(user_id):
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT COALESCE(SUM(amount), 0) FROM withdrawals WHERE user_id=? AND status='pending'",
-                              (user_id,)) as c:
-            return (await c.fetchone())[0]
 
 
 async def get_total_withdrawn(user_id):
@@ -345,46 +343,25 @@ async def get_total_withdrawn(user_id):
             return (await c.fetchone())[0]
 
 
+# --- НОВАЯ ФУНКЦИЯ: сколько на выводе (pending) ---
+async def get_pending_withdrawn(user_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT COALESCE(SUM(amount), 0) FROM withdrawals WHERE user_id=? AND status='pending'",
+                              (user_id,)) as c:
+            return (await c.fetchone())[0]
+
+
 async def get_total_fines(user_id):
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("""
             SELECT COALESCE(SUM(o.price_qr), 0)
-            FROM applications a JOIN operators o ON o.id = a.operator_id
+            FROM applications a
+            JOIN operators o ON o.id = a.operator_id
             WHERE a.user_id = ? AND a.mode='qr' AND a.status='rejected' AND a.reject_reason='block'
         """, (user_id,)) as c:
             return (await c.fetchone())[0]
 
 
-async def pending_amount(user_id):
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("""
-            SELECT COALESCE(SUM(CASE WHEN a.mode='number' THEN o.price_number ELSE o.price_qr END), 0)
-            FROM applications a JOIN operators o ON o.id = a.operator_id
-            WHERE a.user_id = ? AND (a.status IN ('pending','code_requested','code_sent') OR (a.status='accepted' AND a.payout_at IS NOT NULL AND a.payout_at > datetime('now')))
-        """, (user_id,)) as c:
-            return (await c.fetchone())[0]
-
-
-# --- BANS ---
-async def ban_user(user_id):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("INSERT OR REPLACE INTO banned_users (user_id) VALUES (?)", (user_id,))
-        await db.commit()
-
-
-async def unban_user(user_id):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("DELETE FROM banned_users WHERE user_id=?", (user_id,))
-        await db.commit()
-
-
-async def is_user_banned(user_id):
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT 1 FROM banned_users WHERE user_id=?", (user_id,)) as c:
-            return (await c.fetchone()) is not None
-
-
-# --- TICKETS ---
 async def create_ticket(user_id, message):
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute("INSERT INTO tickets (user_id, message) VALUES (?, ?)", (user_id, message))
@@ -406,9 +383,9 @@ async def get_ticket(ticket_id):
             return await c.fetchone()
 
 
-async def reply_ticket(ticket_id, reply):
+async def reply_ticket(ticket_id, reply_text):
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("UPDATE tickets SET reply=? WHERE id=?", (reply, ticket_id))
+        await db.execute("UPDATE tickets SET reply=? WHERE id=?", (reply_text, ticket_id))
         await db.commit()
 
 
@@ -418,39 +395,35 @@ async def close_ticket(ticket_id):
         await db.commit()
 
 
-# --- ADMIN LOGS ---
-async def add_admin_log(admin_id, action, target):
+async def create_withdrawal(user_id, amount):
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("INSERT INTO admin_logs (admin_id, action, target) VALUES (?, ?, ?)",
-                         (admin_id, action, target))
+        await db.execute("INSERT INTO withdrawals (user_id, amount) VALUES (?, ?)", (user_id, amount))
+        await db.execute("UPDATE users SET balance = balance - ? WHERE user_id=?", (amount, user_id))
         await db.commit()
 
 
-async def get_admin_logs(limit=20):
+async def get_pending_withdrawals():
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
-        async with db.execute("SELECT * FROM admin_logs ORDER BY id DESC LIMIT ?", (limit,)) as c:
+        async with db.execute("SELECT * FROM withdrawals WHERE status='pending'") as c:
             return await c.fetchall()
 
 
-# --- STATS ---
+async def approve_withdrawal(w_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE withdrawals SET status='completed' WHERE id=?", (w_id,))
+        await db.commit()
+
+
 async def stats_today():
     async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute(
-                "SELECT COUNT(*) FROM applications WHERE date(processed_at) = date('now') AND status='accepted'") as c:
-            ok = (await c.fetchone())[0]
-        async with db.execute(
-                "SELECT COUNT(*) FROM applications WHERE date(processed_at) = date('now') AND status='rejected' AND reject_reason='block'") as c:
-            blocks = (await c.fetchone())[0]
-        async with db.execute(
-                "SELECT COUNT(*) FROM applications WHERE date(processed_at) = date('now') AND status='rejected' AND reject_reason!='block'") as c:
-            failed = (await c.fetchone())[0]
         async with db.execute("""
-            SELECT COALESCE(SUM(amount), 0) FROM withdrawals
-            WHERE date(created_at) = date('now') AND status='completed'
+            SELECT COALESCE(SUM(CASE WHEN a.status='accepted' THEN 1 ELSE 0 END), 0),
+                   COALESCE(SUM(CASE WHEN a.status='rejected' THEN 1 ELSE 0 END), 0),
+                   COALESCE(SUM(CASE WHEN a.status='accepted' THEN CASE WHEN a.mode='number' THEN o.price_number ELSE o.price_qr END ELSE 0 END), 0)
+            FROM applications a JOIN operators o ON o.id = a.operator_id WHERE date(a.processed_at) = date('now')
         """) as c:
-            paid = (await c.fetchone())[0]
-        return ok, blocks, failed, paid
+            return await c.fetchone()
 
 
 async def stats_total():
@@ -461,21 +434,17 @@ async def stats_total():
         return users, balance, apps
 
 
-async def get_all_apps_export():
+async def all_user_ids():
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT user_id FROM users") as c:
+            return [r[0] for r in await c.fetchall()]
+
+
+async def pending_amount(user_id):
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("""
-            SELECT a.id, a.user_id, u.username, a.mode, COALESCE(a.phone_number, a.qr_number) as val,
-                   o.name, a.status, a.created_at, a.processed_at
+            SELECT COALESCE(SUM(CASE WHEN a.mode='number' THEN o.price_number ELSE o.price_qr END), 0)
             FROM applications a JOIN operators o ON o.id = a.operator_id
-            LEFT JOIN users u ON u.user_id = a.user_id ORDER BY a.id DESC
-        """) as c:
-            return await c.fetchall()
-
-
-async def get_all_withdrawals_export():
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("""
-            SELECT w.id, w.user_id, u.username, w.amount, w.status, w.check_url, w.created_at
-            FROM withdrawals w LEFT JOIN users u ON u.user_id = w.user_id ORDER BY w.id DESC
-        """) as c:
-            return await c.fetchall()
+            WHERE a.user_id = ? AND (a.status IN ('pending', 'code_requested', 'code_sent') OR (a.status='accepted' AND a.payout_at IS NOT NULL AND a.payout_at > datetime('now')))
+        """, (user_id,)) as c:
+            return (await c.fetchone())[0]
