@@ -27,6 +27,16 @@ E_TICKET_MY = "5875462364110787088"
 E_TICKET_REPLY = "5832251986635920010"
 E_TICKET_SOLVED = "5825794181183836432"
 
+# --- Новые премиум-эмодзи из ТЗ ---
+E_INFO = "5879770735999717115"
+E_BAN = "5872829476143894491"
+E_UNBAN = "5776375003280838798"
+E_ADD_BAL = "5775937998948404844"
+E_SUB_BAL = "5807405618008433289"
+E_HISTORY = "6021454607513819417"
+E_SETTINGS = "6021582331251268218"
+E_CLOCK = "6034898821517940846"
+
 
 def sub_kb():
     kb = InlineKeyboardBuilder()
@@ -74,8 +84,7 @@ def operators_kb(operators, mode, active_category='regular'):
         if mode == 'qr' and op["category"] != active_category:
             continue
 
-        btn_text = f"{op['name']} | {op[price_field]:.0f}$" if op[
-                                                                   price_field] % 1 == 0 else f"{op['name']} | {op[price_field]:.2f}$"
+        btn_text = f"{op['name']} | {op[price_field]:.0f}$" if op[price_field] % 1 == 0 else f"{op['name']} | {op[price_field]:.2f}$"
 
         if op[field]:
             kb.button(
@@ -120,10 +129,12 @@ def user_code_kb():
     return kb.as_markup()
 
 
-def support_menu_kb():
+def support_menu_kb(urgent_link: str | None = None):
     kb = InlineKeyboardBuilder()
     kb.button(text="Создать обращение", callback_data="support_new", icon_custom_emoji_id=E_TICKET_NEW)
     kb.button(text="Мои обращения", callback_data="support_my", icon_custom_emoji_id=E_TICKET_MY)
+    if urgent_link:
+        kb.button(text="🔗 Срочная связь", url=urgent_link, icon_custom_emoji_id=E_LINK)
     kb.adjust(1)
     return kb.as_markup()
 
@@ -154,14 +165,25 @@ def application_admin_kb(app_id, mode, status='pending', user_id=None):
         kb.button(text="Отклонить", callback_data=f"adm_reject:{app_id}", style="danger", icon_custom_emoji_id=E_FAIL)
         kb.button(text="Отмена", callback_data=f"adm_cancel:{app_id}")
         if user_id:
-            kb.button(text="🚫 Забанить", callback_data=f"adm_ban:{user_id}", style="danger")
-        kb.adjust(2, 1, 1, 1)
+            kb.button(text="👤 Инфо", callback_data=f"adm_user_info:{user_id}", icon_custom_emoji_id=E_INFO)
+            kb.button(text="🚫 Забанить", callback_data=f"adm_ban_user:{user_id}", style="danger",
+                      icon_custom_emoji_id=E_BAN)
+        kb.adjust(2, 1, 1, 1, 1)
     elif status == 'accepted':
         kb.button(text="Отменить принятие", callback_data=f"adm_undo_accept:{app_id}", style="danger")
+        if user_id:
+            kb.button(text="👤 Инфо", callback_data=f"adm_user_info:{user_id}", icon_custom_emoji_id=E_INFO)
+        kb.adjust(1, 1)
     elif status == 'rejected':
         kb.button(text="Вернуть на проверку", callback_data=f"adm_undo_reject:{app_id}", style="primary")
+        if user_id:
+            kb.button(text="👤 Инфо", callback_data=f"adm_user_info:{user_id}", icon_custom_emoji_id=E_INFO)
+        kb.adjust(1, 1)
     elif status == 'cancelled':
         kb.button(text="Восстановить заявку", callback_data=f"adm_undo_cancel:{app_id}", style="primary")
+        if user_id:
+            kb.button(text="👤 Инфо", callback_data=f"adm_user_info:{user_id}", icon_custom_emoji_id=E_INFO)
+        kb.adjust(1, 1)
     return kb.as_markup()
 
 
@@ -177,6 +199,7 @@ def reject_reason_kb(app_id):
 def admin_panel_kb():
     kb = InlineKeyboardBuilder()
     kb.button(text="Управление операторами", callback_data="adm_manage_ops")
+    kb.button(text="⚙️ Настройки", callback_data="adm_settings", icon_custom_emoji_id=E_SETTINGS)
     kb.button(text="Сменить цену", callback_data="adm_change_price_mode", icon_custom_emoji_id=E_WALLET)
     kb.button(text="Статистика", callback_data="adm_stats_menu", icon_custom_emoji_id=E_STATS)
     kb.button(text="Рассылка", callback_data="adm_broadcast", icon_custom_emoji_id=E_BROADCAST)
@@ -191,6 +214,25 @@ def admin_panel_kb():
     return kb.as_markup()
 
 
+def adm_settings_kb():
+    kb = InlineKeyboardBuilder()
+    kb.button(text="💰 Мин. вывод", callback_data="adm_set_min", icon_custom_emoji_id=E_MONEY)
+    kb.button(text="⏰ Время работы", callback_data="adm_set_hours", icon_custom_emoji_id=E_CLOCK)
+    kb.button(text="🔗 Срочная связь", callback_data="adm_set_urgent", icon_custom_emoji_id=E_LINK)
+    kb.button(text="⬅️ Назад", callback_data="admin_panel")
+    kb.adjust(2, 1, 1)
+    return kb.as_markup()
+
+
+def adm_hours_kb():
+    kb = InlineKeyboardBuilder()
+    kb.button(text="⏰ Начало ворка", callback_data="adm_set_start", icon_custom_emoji_id=E_CLOCK)
+    kb.button(text="⏰ Конец ворка", callback_data="adm_set_end", icon_custom_emoji_id=E_CLOCK)
+    kb.button(text="⬅️ Назад", callback_data="adm_settings")
+    kb.adjust(2, 1)
+    return kb.as_markup()
+
+
 def adm_notify_operator_kb(op_id):
     kb = InlineKeyboardBuilder()
     kb.button(text="🔔 Уведомить о включении", callback_data=f"notify_op:{op_id}")
@@ -201,9 +243,47 @@ def adm_notify_operator_kb(op_id):
 def adm_withdrawals_kb(withdrawals):
     kb = InlineKeyboardBuilder()
     for w in withdrawals:
-        kb.button(text=f"Выплатить #{w['id']} (${w['amount']:.2f})", callback_data=f"adm_pay_w:{w['id']}")
+        kb.button(text=f"💸 Выплатить #{w['id']} (${w['amount']:.2f})", callback_data=f"adm_pay_w:{w['id']}")
+        kb.button(text=f"❌ Отменить #{w['id']}", callback_data=f"adm_cancel_w:{w['id']}", style="danger")
     kb.button(text="⬅️ Назад", callback_data="admin_panel")
+    kb.adjust(2)
+    return kb.as_markup()
+
+
+def withdraw_history_checks_kb(items):
+    """Кнопки-ссылки на чеки для завершённых заявок (или None, если нечего показать)."""
+    kb = InlineKeyboardBuilder()
+    has = False
+    for w in items:
+        if w['status'] == 'completed' and w.get('check_link') if hasattr(w, 'get') else (w['status'] == 'completed' and w['check_link']):
+            try:
+                link = w['check_link']
+            except (KeyError, IndexError):
+                link = None
+            if link:
+                kb.button(text=f"🔗 Чек #{w['id']} (${w['amount']:.2f})", url=link, icon_custom_emoji_id=E_LINK)
+                has = True
+    if not has:
+        return None
     kb.adjust(1)
+    return kb.as_markup()
+
+
+def adm_user_info_kb(user_id, is_banned):
+    kb = InlineKeyboardBuilder()
+    if is_banned:
+        kb.button(text="✅ Разбанить", callback_data=f"adm_unban_user:{user_id}", style="success",
+                  icon_custom_emoji_id=E_UNBAN)
+    else:
+        kb.button(text="🚫 Забанить", callback_data=f"adm_ban_user:{user_id}", style="danger",
+                  icon_custom_emoji_id=E_BAN)
+    kb.button(text="➕ Начислить", callback_data=f"adm_add_balance:{user_id}", style="success",
+              icon_custom_emoji_id=E_ADD_BAL)
+    kb.button(text="➖ Списать", callback_data=f"adm_sub_balance:{user_id}", style="danger",
+              icon_custom_emoji_id=E_SUB_BAL)
+    kb.button(text="📜 История заявок", callback_data=f"adm_user_apps:{user_id}", icon_custom_emoji_id=E_HISTORY)
+    kb.button(text="🔄 Обновить", callback_data=f"adm_user_info:{user_id}", icon_custom_emoji_id=E_INFO)
+    kb.adjust(2, 2, 1, 1)
     return kb.as_markup()
 
 

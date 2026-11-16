@@ -8,11 +8,10 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.filters import CommandStart, StateFilter
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.dispatcher.event.bases import SkipHandler
 import aiosqlite
 
-from config import BOT_TOKEN, ADMIN_IDS, ADMIN_GROUP_ID, REF_BONUS, QR_COOLDOWN_MINUTES, PHONE_REGEX, SUPPORT_LINK, \
-    CHANNEL_ID
+from config import (BOT_TOKEN, ADMIN_IDS, ADMIN_GROUP_ID, REF_BONUS, QR_COOLDOWN_MINUTES,
+                    PHONE_REGEX, SUPPORT_LINK, CHANNEL_ID)
 from database import *
 from keyboards import *
 from middlewares.subscription import SubscriptionMiddleware
@@ -37,6 +36,9 @@ E_BROADCAST_HTML = '<tg-emoji emoji-id="5258089153505009279">📣</tg-emoji>'
 E_DOWN_HTML = '<tg-emoji emoji-id="5231102735817918643">👇</tg-emoji>'
 E_LINK_HTML = '<tg-emoji emoji-id="5260730055880876557">🔗</tg-emoji>'
 E_NOT_ACCEPT_HTML = '<tg-emoji emoji-id="5260249440450520061">🖐</tg-emoji>'
+E_INFO_HTML = '<tg-emoji emoji-id="5879770735999717115">👤</tg-emoji>'
+E_SETTINGS_HTML = '<tg-emoji emoji-id="6021582331251268218">⚙️</tg-emoji>'
+E_CLOCK_HTML = '<tg-emoji emoji-id="6034898821517940846">⏰</tg-emoji>'
 
 
 class WorkStates(StatesGroup):
@@ -53,6 +55,11 @@ class AdminStates(StatesGroup):
     waiting_reject_reason = State()
     waiting_new_name = State()
     waiting_unban_id = State()
+    waiting_min_withdraw = State()
+    waiting_work_start = State()
+    waiting_work_end = State()
+    waiting_urgent_link = State()
+    waiting_user_balance_amount = State()
 
 
 class SupportStates(StatesGroup):
@@ -68,19 +75,25 @@ bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
 
-def is_admin(uid: int) -> bool: return uid in ADMIN_IDS
+def is_admin(uid: int) -> bool:
+    return uid in ADMIN_IDS
 
 
 async def safe_edit_app_message(message: Message, new_status_text: str, reply_markup):
     try:
         if message.photo:
-            new_caption = f"{message.caption.split('Статус:')[0].strip()}\n\nСтатус: {new_status_text}"
+            base = message.caption.split('Статус:')[0].strip() if message.caption and 'Статус:' in message.caption else (message.caption or "")
+            new_caption = f"{base}\n\nСтатус: {new_status_text}"
             await message.edit_caption(caption=new_caption, reply_markup=reply_markup)
         else:
-            new_text = f"{message.text.split('Статус:')[0].strip()}\n\nСтатус: {new_status_text}"
+            base = message.text.split('Статус:')[0].strip() if message.text and 'Статус:' in message.text else (message.text or "")
+            new_text = f"{base}\n\nСтатус: {new_status_text}"
             await message.edit_text(text=new_text, reply_markup=reply_markup)
     except Exception:
-        await message.reply(f"Статус: {new_status_text}", reply_markup=reply_markup)
+        try:
+            await message.reply(f"Статус: {new_status_text}", reply_markup=reply_markup)
+        except Exception:
+            pass
 
 
 async def get_mode_message_and_kb(mode: str):
@@ -100,7 +113,7 @@ async def get_mode_message_and_kb(mode: str):
         if mode == "number":
             text = f"{E_NOT_ACCEPT_HTML} <b>Приём операторов сейчас закрыт</b>\n\nЗаглядывайте позже — как только приём откроют, кнопки снова заработают."
         else:
-            text = f"{E_NOT_ACCEPT_HTML} <b>Готовые QR сейчас не принимаются</b>\n\nГотовые QR принимаются с 04:00 до 21:00 МСК. Приходите в 04:00. Или сдайте номер."
+            text = f"{E_NOT_ACCEPT_HTML} <b>Готовые QR сейчас не принимаются</b>\n\nГотовые QR принимаются по графику. Заглядывайте позже."
     else:
         text = f"{E_PHONE_HTML} <b>Выберите оператора:</b>"
         if inactive_ops:
@@ -109,6 +122,8 @@ async def get_mode_message_and_kb(mode: str):
 
     return text, operators_kb(possible_ops, mode, 'regular')
 
+
+# ============ СТАРТ / ПОДПИСКА ============
 
 @dp.message(CommandStart())
 async def cmd_start(msg: Message, state: FSMContext):
@@ -121,7 +136,8 @@ async def cmd_start(msg: Message, state: FSMContext):
     if len(parts) > 1 and parts[1].startswith("ref_"):
         try:
             ref = int(parts[1][4:])
-            if ref != msg.from_user.id: referrer_id = ref
+            if ref != msg.from_user.id:
+                referrer_id = ref
         except ValueError:
             pass
 
@@ -153,26 +169,29 @@ async def check_sub(cb: CallbackQuery):
     except Exception:
         ok = False
 
-    if not ok: return await cb.answer("❌ Подписка не найдена.", show_alert=True)
+    if not ok:
+        return await cb.answer("❌ Подписка не найдена.", show_alert=True)
     await cb.message.edit_text(f"{E_SUCCESS_HTML} Подписка подтверждена!")
     await cb.message.answer("Добро пожаловать!", reply_markup=main_menu_kb(is_admin(cb.from_user.id)))
     await cb.answer()
 
 
-# --- ПРОФИЛЬ (ИСПРАВЛЕН) ---
+# ============ ПРОФИЛЬ ============
+
 @dp.message(F.text.contains("Мой профиль"))
 async def profile(msg: Message):
     if await is_user_banned(msg.from_user.id):
         return await msg.answer("⛔ Вы заблокированы.")
 
     u = await get_user(msg.from_user.id)
-    if not u: return await msg.answer("Нажми /start.")
+    if not u:
+        return await msg.answer("Нажми /start.")
 
-    pending_apps = await pending_amount(msg.from_user.id)  # На проверке
-    available = u['balance']  # Доступно к выводу
-    pending_wd = await get_pending_withdrawn(msg.from_user.id)  # На выводе (pending заявки)
-    withdrawn = await get_total_withdrawn(msg.from_user.id)  # Выведено (completed)
-    fines = await get_total_fines(msg.from_user.id)  # Штрафы
+    pending_apps = await pending_amount(msg.from_user.id)
+    available = u['balance']
+    pending_wd = await get_pending_withdrawn(msg.from_user.id)
+    withdrawn = await get_total_withdrawn(msg.from_user.id)
+    fines = await get_total_fines(msg.from_user.id)
 
     total_earned = available + pending_apps + pending_wd + withdrawn + fines
 
@@ -181,7 +200,7 @@ async def profile(msg: Message):
         created_dt = datetime.strptime(created_raw.split('.')[0], "%Y-%m-%d %H:%M:%S")
         days_with_us = (datetime.utcnow() - created_dt).days + 1
         created_str = created_dt.strftime("%d.%m.%Y")
-    except:
+    except Exception:
         days_with_us = 1
         created_str = "01.01.2024"
 
@@ -211,8 +230,9 @@ async def audit_log(cb: CallbackQuery):
 
     text = f"{E_ORDER_HTML} <b>Журнал заявок (последние 10):</b>\n\n"
     for a in apps:
-        status = {"pending": "⏳ В ожидании", "accepted": "✅ Принято", "rejected": "❌ Отклонено"}.get(a['status'],
-                                                                                                     a['status'])
+        status = {"pending": "⏳ В ожидании", "accepted": "✅ Принято",
+                  "rejected": "❌ Отклонено", "cancelled": "⏹ Отменена",
+                  "code_requested": "💬 Запрошен код", "code_sent": "💬 Код отправлен"}.get(a['status'], a['status'])
         val = a['phone_number'] if a['mode'] == 'number' else a['qr_number']
         text += f"<b>#{a['id']}</b> | {a['mode'].upper()} | {val}\nСтатус: {status}\n\n"
 
@@ -222,27 +242,41 @@ async def audit_log(cb: CallbackQuery):
 
 @dp.callback_query(F.data == "withdraw_history")
 async def withdraw_history(cb: CallbackQuery):
+    """[+] История выплат: дата подачи, сумма, и кнопка 'Посмотреть чек' для completed."""
     wds = await get_user_withdrawals(cb.from_user.id)
     if not wds:
         return await cb.answer("У вас пока нет выплат.", show_alert=True)
 
     text = f"{E_MONEY_HTML} <b>История выплат:</b>\n\n"
+    items_for_kb = []
     for w in wds:
-        status = "✅ Выплачено" if w['status'] == 'completed' else "⏳ В обработке"
-        date = w['created_at'].split('.')[0]
-        text += f"<b>#{w['id']}</b> | ${w['amount']:.2f}\nДата: {date}\nСтатус: {status}\n\n"
+        status_map = {"completed": "✅ Выплачено", "pending": "⏳ В обработке",
+                      "cancelled": "❌ Отменено"}
+        status = status_map.get(w['status'], w['status'])
+        date = (w['created_at'] or "").split('.')[0]
+        text += f"<b>#{w['id']}</b> | ${w['amount']:.2f}\nДата: {date}\nСтатус: {status}\n"
+        if w['status'] == 'cancelled':
+            text += f"<i>Причина: {w['reject_reason'] or '—'}</i>\n"
+        text += "\n"
+        items_for_kb.append(w)
 
-    await cb.message.answer(text)
+    kb = withdraw_history_checks_kb(items_for_kb)
+    await cb.message.answer(text, reply_markup=kb, disable_web_page_preview=True)
     await cb.answer()
 
 
-# --- ПОДДЕРЖКА ---
+# ============ ПОДДЕРЖКА ============
+
 @dp.message(F.text.contains("Поддержка"))
 async def support_btn(msg: Message, state: FSMContext):
     await state.clear()
     if await is_user_banned(msg.from_user.id):
         return await msg.answer("⛔ Вы заблокированы.")
-    await msg.answer(f"{E_SUPPORT_HTML} <b>Поддержка</b>\n\nВыберите действие:", reply_markup=support_menu_kb())
+    urgent = await get_urgent_support_link()
+    if not urgent:
+        urgent = SUPPORT_LINK  # fallback из config
+    await msg.answer(f"{E_SUPPORT_HTML} <b>Поддержка</b>\n\nВыберите действие:",
+                     reply_markup=support_menu_kb(urgent))
 
 
 @dp.callback_query(F.data == "support_new")
@@ -257,7 +291,11 @@ async def handle_support_msg(msg: Message, state: FSMContext):
     await state.clear()
     t_id = await create_ticket(msg.from_user.id, msg.html_text or "Фото/Медиа")
 
-    admin_msg = f"🎫 <b>Обращение #{t_id}</b>\n\n👤 <b>От:</b> {msg.from_user.full_name}\n{E_LINK_HTML} @{msg.from_user.username or '—'}\n🆔 <code>{msg.from_user.id}</code>\n\n💬 <b>Сообщение:</b>\n{msg.html_text}"
+    admin_msg = (f"🎫 <b>Обращение #{t_id}</b>\n\n"
+                 f"👤 <b>От:</b> {msg.from_user.full_name}\n"
+                 f"{E_LINK_HTML} @{msg.from_user.username or '—'}\n"
+                 f"🆔 <code>{msg.from_user.id}</code>\n\n"
+                 f"💬 <b>Сообщение:</b>\n{msg.html_text}")
 
     if msg.photo:
         await bot.send_photo(ADMIN_GROUP_ID, msg.photo[-1].file_id, caption=admin_msg,
@@ -286,7 +324,6 @@ async def support_my(cb: CallbackQuery):
     await cb.answer()
 
 
-# --- ТИКЕТЫ (ОТВЕТЫ) ---
 @dp.callback_query(F.data.startswith("user_reply_ticket:"))
 async def user_reply_ticket(cb: CallbackQuery, state: FSMContext):
     t_id = int(cb.data.split(":")[1])
@@ -302,7 +339,10 @@ async def user_send_reply(msg: Message, state: FSMContext):
     t_id = data.get("ticket_id")
     await state.clear()
 
-    admin_msg = f"🎫 <b>Обращение #{t_id} (Ответ юзера)</b>\n\n👤 <b>От:</b> {msg.from_user.full_name}\n🆔 <code>{msg.from_user.id}</code>\n\n💬 <b>Сообщение:</b>\n{msg.html_text}"
+    admin_msg = (f"🎫 <b>Обращение #{t_id} (Ответ юзера)</b>\n\n"
+                 f"👤 <b>От:</b> {msg.from_user.full_name}\n"
+                 f"🆔 <code>{msg.from_user.id}</code>\n\n"
+                 f"💬 <b>Сообщение:</b>\n{msg.html_text}")
 
     if msg.photo:
         await bot.send_photo(ADMIN_GROUP_ID, msg.photo[-1].file_id, caption=admin_msg,
@@ -316,15 +356,21 @@ async def user_send_reply(msg: Message, state: FSMContext):
 @dp.callback_query(F.data.startswith("user_close_ticket:"))
 async def user_close_ticket(cb: CallbackQuery):
     t_id = int(cb.data.split(":")[1])
+    # [+] фикс: reply_ticket + close_ticket
     await reply_ticket(t_id, "Пользователь отметил проблему решенной")
+    await close_ticket(t_id)
     await cb.message.edit_text(f"{E_SUCCESS_HTML} Обращение #{t_id} закрыто. Спасибо!", reply_markup=None)
-    await bot.send_message(ADMIN_GROUP_ID, f"✅ <b>Обращение #{t_id}</b> закрыто пользователем.")
+    try:
+        await bot.send_message(ADMIN_GROUP_ID, f"✅ <b>Обращение #{t_id}</b> закрыто пользователем.")
+    except Exception:
+        pass
     await cb.answer()
 
 
 @dp.callback_query(F.data.startswith("adm_reply_ticket:"))
 async def adm_reply_ticket(cb: CallbackQuery, state: FSMContext):
-    if not is_admin(cb.from_user.id): return
+    if not is_admin(cb.from_user.id):
+        return
     t_id = int(cb.data.split(":")[1])
     await state.set_state(AdminSupportStates.waiting_reply)
     await state.update_data(ticket_id=t_id)
@@ -334,7 +380,8 @@ async def adm_reply_ticket(cb: CallbackQuery, state: FSMContext):
 
 @dp.message(AdminSupportStates.waiting_reply)
 async def admin_send_reply(msg: Message, state: FSMContext):
-    if not is_admin(msg.from_user.id): return
+    if not is_admin(msg.from_user.id):
+        return
     data = await state.get_data()
     t_id = data.get("ticket_id")
     await state.clear()
@@ -350,7 +397,7 @@ async def admin_send_reply(msg: Message, state: FSMContext):
         try:
             await bot.send_message(t['user_id'], f"🎧 <b>Ответ по обращению #{t_id}:</b>\n\n{msg.html_text}",
                                    reply_markup=user_ticket_action_kb(t_id))
-        except:
+        except Exception:
             pass
 
     await msg.answer(f"{E_SUCCESS_HTML} Ответ отправлен пользователю!")
@@ -358,9 +405,11 @@ async def admin_send_reply(msg: Message, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("adm_close_ticket:"))
 async def adm_close_ticket(cb: CallbackQuery):
-    if not is_admin(cb.from_user.id): return
+    if not is_admin(cb.from_user.id):
+        return
     t_id = int(cb.data.split(":")[1])
     await reply_ticket(t_id, "Закрыто администратором")
+    await close_ticket(t_id)  # [+] фикс
 
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
@@ -370,32 +419,39 @@ async def adm_close_ticket(cb: CallbackQuery):
     if t:
         try:
             await bot.send_message(t['user_id'], f"✅ <b>Обращение #{t_id} закрыто администратором.</b>")
-        except:
+        except Exception:
             pass
 
     await cb.message.edit_text(f"✅ Обращение #{t_id} закрыто.", reply_markup=None)
     await cb.answer()
 
 
-# --- ВЫВОД ---
+# ============ ВЫВОД ============
+
 @dp.callback_query(F.data == "withdraw")
 async def withdraw(cb: CallbackQuery):
     u = await get_user(cb.from_user.id)
     amount = u["balance"]
+    min_w = await get_min_withdraw()  # [+] из настроек
 
-    if amount < 5.0:
-        return await cb.answer(f"❌ Минимум для вывода: $5.00\nБаланс: ${amount:.2f}", show_alert=True)
+    if amount < min_w:
+        return await cb.answer(f"❌ Минимум для вывода: ${min_w:.2f}\nБаланс: ${amount:.2f}", show_alert=True)
 
     await create_withdrawal(cb.from_user.id, amount)
 
     await cb.message.answer(
         f"{E_SUCCESS_HTML} Заявка на вывод <b>${amount:.2f}</b> создана!\nОжидайте выплаты (обычно в конце рабочего дня).")
-    await bot.send_message(ADMIN_GROUP_ID,
-                           f"💸 <b>Новая заявка на вывод!</b>\n\n👤 {cb.from_user.full_name}\n🆔 <code>{cb.from_user.id}</code>\n💰 Сумма: <b>${amount:.2f}</b>")
+    try:
+        await bot.send_message(ADMIN_GROUP_ID,
+                               f"💸 <b>Новая заявка на вывод!</b>\n\n👤 {cb.from_user.full_name}\n"
+                               f"🆔 <code>{cb.from_user.id}</code>\n💰 Сумма: <b>${amount:.2f}</b>")
+    except Exception:
+        pass
     await cb.answer()
 
 
-# --- РАБОТА ---
+# ============ РАБОТА ============
+
 @dp.message(F.text.contains("Начать работу"))
 async def start_work(msg: Message, state: FSMContext):
     await state.clear()
@@ -422,6 +478,12 @@ async def choose_mode(cb: CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data == "back_main")
 async def back_main_inline(cb: CallbackQuery):
     await cb.message.edit_text("🏠 Главное меню внизу 👇", reply_markup=None)
+    await cb.answer()
+
+
+@dp.callback_query(F.data == "ignore")
+async def ignore_cb(cb: CallbackQuery):
+    # [+] фикс: заглушка для кнопок-заглушек
     await cb.answer()
 
 
@@ -488,24 +550,40 @@ async def choose_operator(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
 
 
-# --- ПРИЕМ НОМЕРА ---
+# --- ПРИЁМ НОМЕРА ---
+
 @dp.message(WorkStates.waiting_number, F.text)
 async def receive_number(msg: Message, state: FSMContext):
-    if not PHONE_REGEX.match(msg.text.strip()):
+    phone = msg.text.strip()
+    if not PHONE_REGEX.match(phone):
         return await msg.answer("❗ Формат: <code>+79187382031</code>")
 
-    phone = msg.text.strip()
+    # [+] Кулдаун 15 минут после отклонения
+    last_rej = await get_last_rejection_time(msg.from_user.id)
+    if last_rej:
+        try:
+            last_dt = datetime.strptime(last_rej.split('.')[0], "%Y-%m-%d %H:%M:%S")
+            diff = (datetime.utcnow() - last_dt).total_seconds()
+            if diff < 15 * 60:
+                left = int((15 * 60 - diff) // 60) + 1
+                return await msg.answer(
+                    f"⏳ После отклонения заявки нельзя сдавать новые номера ещё <b>{left} мин</b>.")
+        except Exception:
+            pass
 
+    # [+] Анти-дубль (pending + accepted + code_*)
     if await check_number_already_accepted("number", phone):
-        return await msg.answer(f"{E_FAIL_HTML} Этот номер уже был сдан и оплачен. Нельзя сдавать повторно.")
+        return await msg.answer(f"{E_FAIL_HTML} Этот номер уже сдан или висит на проверке.")
 
     data = await state.get_data()
     op = await get_operator(data["operator_id"])
     app_id = await create_application(user_id=msg.from_user.id, operator_id=op["id"], mode="number", phone_number=phone)
 
     text = (f"🆕 <b>Заявка #{app_id}</b> [{E_PHONE_HTML} Номер]\n\n"
-            f"{E_PROFILE_HTML} {msg.from_user.full_name}\n{E_LINK_HTML} @{msg.from_user.username or '—'}\n🆔 <code>{msg.from_user.id}</code>\n\n"
-            f"{E_PHONE_HTML} Оператор: <b>{op['name']}</b>\n☎️ Номер: <code>{phone}</code>\n{E_MONEY_HTML} Цена: ${op['price_number']:.2f}")
+            f"{E_PROFILE_HTML} {msg.from_user.full_name}\n"
+            f"{E_LINK_HTML} @{msg.from_user.username or '—'}\n🆔 <code>{msg.from_user.id}</code>\n\n"
+            f"{E_PHONE_HTML} Оператор: <b>{op['name']}</b>\n☎️ Номер: <code>{phone}</code>\n"
+            f"{E_MONEY_HTML} Цена: ${op['price_number']:.2f}")
 
     sent = await bot.send_message(ADMIN_GROUP_ID, text,
                                   reply_markup=application_admin_kb(app_id, "number", "pending", msg.from_user.id))
@@ -515,7 +593,8 @@ async def receive_number(msg: Message, state: FSMContext):
         f"{E_SUCCESS_HTML} <b>Заявка успешно отправлена на проверку!</b>\nОжидайте решения администратора.")
 
 
-# --- ПРИЕМ QR ---
+# --- ПРИЁМ QR ---
+
 @dp.message(WorkStates.waiting_qr_photo, F.photo)
 async def qr_photo(msg: Message, state: FSMContext):
     await state.update_data(qr_photo_id=msg.photo[-1].file_id)
@@ -531,13 +610,25 @@ async def qr_photo_bad(msg: Message):
 
 @dp.message(WorkStates.waiting_qr_number, F.text)
 async def qr_number(msg: Message, state: FSMContext):
-    if not PHONE_REGEX.match(msg.text.strip()):
+    qr_num = msg.text.strip()
+    if not PHONE_REGEX.match(qr_num):
         return await msg.answer("❗ Формат: <code>+79187382031</code>")
 
-    qr_num = msg.text.strip()
+    # [+] Кулдаун 15 минут
+    last_rej = await get_last_rejection_time(msg.from_user.id)
+    if last_rej:
+        try:
+            last_dt = datetime.strptime(last_rej.split('.')[0], "%Y-%m-%d %H:%M:%S")
+            diff = (datetime.utcnow() - last_dt).total_seconds()
+            if diff < 15 * 60:
+                left = int((15 * 60 - diff) // 60) + 1
+                return await msg.answer(
+                    f"⏳ После отклонения заявки нельзя сдавать новые номера ещё <b>{left} мин</b>.")
+        except Exception:
+            pass
 
     if await check_number_already_accepted("qr", qr_num):
-        return await msg.answer(f"{E_FAIL_HTML} Этот QR уже был сдан и оплачен. Нельзя сдавать повторно.")
+        return await msg.answer(f"{E_FAIL_HTML} Этот QR уже сдан или висит на проверке.")
 
     data = await state.get_data()
     op = await get_operator(data["operator_id"])
@@ -545,8 +636,10 @@ async def qr_number(msg: Message, state: FSMContext):
                                       qr_photo_id=data["qr_photo_id"], qr_number=qr_num)
 
     caption = (f"🆕 <b>Заявка #{app_id}</b> [🖼 QR]\n\n"
-               f"{E_PROFILE_HTML} {msg.from_user.full_name}\n{E_LINK_HTML} @{msg.from_user.username or '—'}\n🆔 <code>{msg.from_user.id}</code>\n\n"
-               f"{E_PHONE_HTML} Оператор: <b>{op['name']}</b>\n🔢 Номер QR: <code>{qr_num}</code>\n{E_MONEY_HTML} Цена: ${op['price_qr']:.2f}")
+               f"{E_PROFILE_HTML} {msg.from_user.full_name}\n"
+               f"{E_LINK_HTML} @{msg.from_user.username or '—'}\n🆔 <code>{msg.from_user.id}</code>\n\n"
+               f"{E_PHONE_HTML} Оператор: <b>{op['name']}</b>\n🔢 Номер QR: <code>{qr_num}</code>\n"
+               f"{E_MONEY_HTML} Цена: ${op['price_qr']:.2f}")
     sent = await bot.send_photo(ADMIN_GROUP_ID, photo=data["qr_photo_id"], caption=caption,
                                 reply_markup=application_admin_kb(app_id, "qr", "pending", msg.from_user.id))
     await set_admin_message(app_id, ADMIN_GROUP_ID, sent.message_id)
@@ -556,6 +649,7 @@ async def qr_number(msg: Message, state: FSMContext):
 
 
 # --- КОД ОТ ЮЗЕРА ---
+
 @dp.callback_query(F.data == "user_write_code")
 async def user_write_code(cb: CallbackQuery, state: FSMContext):
     await state.set_state(WorkStates.waiting_code)
@@ -568,7 +662,10 @@ async def user_cancel_code(cb: CallbackQuery):
     app = await get_app_awaiting_code(cb.from_user.id)
     if app:
         await update_app(app["id"], status="cancelled", awaiting_code=0)
-        await bot.send_message(ADMIN_GROUP_ID, f"⏹ <b>Пользователь отменил запрос кода для заявки #{app['id']}.</b>")
+        try:
+            await bot.send_message(ADMIN_GROUP_ID, f"⏹ <b>Пользователь отменил запрос кода для заявки #{app['id']}.</b>")
+        except Exception:
+            pass
     await cb.message.edit_text("❌ Вы отменили запрос кода. Заявка отменена.")
     await cb.answer()
 
@@ -581,12 +678,16 @@ async def catch_code(msg: Message, state: FSMContext):
         return await msg.answer("⚠️ Активная заявка не найдена.")
 
     await update_app(app["id"], code=msg.text.strip(), status="code_sent", awaiting_code=0)
-    await bot.send_message(ADMIN_GROUP_ID, f"💬 <b>Код для заявки #{app['id']}:</b>\n<code>{msg.text.strip()}</code>")
+    try:
+        await bot.send_message(ADMIN_GROUP_ID, f"💬 <b>Код для заявки #{app['id']}:</b>\n<code>{msg.text.strip()}</code>")
+    except Exception:
+        pass
     await state.clear()
     await msg.answer(f"{E_SUCCESS_HTML} Код отправлен администратору.")
 
 
-# --- АДМИН-ПАНЕЛЬ ---
+# ============ АДМИН-ПАНЕЛЬ ============
+
 @dp.message(F.text.contains("Админ-панель"))
 async def panel_msg(msg: Message, state: FSMContext):
     await state.clear()
@@ -595,36 +696,165 @@ async def panel_msg(msg: Message, state: FSMContext):
 
     auto_work = await get_setting("auto_work")
     status = "🟢 Включен" if auto_work == "1" else "🔴 Отключен (ручной режим)"
+    ws, we = await get_work_start(), await get_work_end()
 
-    await msg.answer(f"👑 <b>Админ-панель</b>\n\n<i>Авто-график (06:00-19:00): {status}</i>",
+    await msg.answer(f"👑 <b>Админ-панель</b>\n\n<i>Авто-график ({ws}–{we} МСК): {status}</i>",
                      reply_markup=admin_panel_kb())
 
 
 @dp.callback_query(F.data == "admin_panel")
 async def back_to_admin(cb: CallbackQuery):
-    if not is_admin(cb.from_user.id): return
-
+    if not is_admin(cb.from_user.id):
+        return
     auto_work = await get_setting("auto_work")
     status = "🟢 Включен" if auto_work == "1" else "🔴 Отключен (ручной режим)"
+    ws, we = await get_work_start(), await get_work_end()
 
-    await cb.message.edit_text(f"👑 <b>Админ-панель</b>\n\n<i>Авто-график (06:00-19:00): {status}</i>",
+    await cb.message.edit_text(f"👑 <b>Админ-панель</b>\n\n<i>Авто-график ({ws}–{we} МСК): {status}</i>",
                                reply_markup=admin_panel_kb())
     await cb.answer()
 
 
 @dp.callback_query(F.data == "close_admin")
 async def close_admin(cb: CallbackQuery):
-    if not is_admin(cb.from_user.id): return
+    if not is_admin(cb.from_user.id):
+        return
     await cb.message.edit_text(
         "👑 <b>Админ-панель закрыта.</b>\nНажми на кнопку «👑 Админ-панель» внизу, чтобы открыть её снова.",
         reply_markup=None)
     await cb.answer()
 
 
-# --- ЭКСПОРТ В CSV ---
+# ============ НАСТРОЙКИ (мин.вывод, время ворка, срочная связь) ============
+
+@dp.callback_query(F.data == "adm_settings")
+async def adm_settings(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return
+    min_w = await get_min_withdraw()
+    ws, we = await get_work_start(), await get_work_end()
+    urgent = await get_urgent_support_link() or "—"
+    text = (f"{E_SETTINGS_HTML} <b>Настройки</b>\n\n"
+            f"{E_MONEY_HTML} Мин. вывод: <b>${min_w:.2f}</b>\n"
+            f"{E_CLOCK_HTML} Время работы: <b>{ws} – {we}</b> (МСК)\n"
+            f"{E_LINK_HTML} Срочная связь: {urgent}")
+    await cb.message.edit_text(text, reply_markup=adm_settings_kb(), disable_web_page_preview=True)
+    await cb.answer()
+
+
+@dp.callback_query(F.data == "adm_set_min")
+async def adm_set_min(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return
+    await state.set_state(AdminStates.waiting_min_withdraw)
+    await cb.message.answer("Введи новую <b>минимальную сумму вывода</b> в $:")
+    await cb.answer()
+
+
+@dp.message(AdminStates.waiting_min_withdraw)
+async def save_min_withdraw(msg: Message, state: FSMContext):
+    if not is_admin(msg.from_user.id):
+        return
+    try:
+        v = float(msg.text.replace(",", "."))
+        if v < 0:
+            raise ValueError
+    except Exception:
+        return await msg.answer("❗ Некорректная сумма.")
+    await set_setting("min_withdraw", f"{v:.2f}")
+    await state.clear()
+    await add_admin_log(msg.from_user.id, "Мин. вывод изменён", f"${v:.2f}")
+    await msg.answer(f"{E_SUCCESS_HTML} Мин. вывод = <b>${v:.2f}</b>", reply_markup=admin_panel_kb())
+
+
+@dp.callback_query(F.data == "adm_set_hours")
+async def adm_set_hours(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return
+    ws, we = await get_work_start(), await get_work_end()
+    await cb.message.edit_text(f"⏰ Текущее: <b>{ws} – {we}</b> (МСК)",
+                               reply_markup=adm_hours_kb())
+    await cb.answer()
+
+
+@dp.callback_query(F.data == "adm_set_start")
+async def adm_set_start(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return
+    await state.set_state(AdminStates.waiting_work_start)
+    await cb.message.answer("Введи <b>время начала</b> ворка в формате <code>HH:MM</code> (МСК):")
+    await cb.answer()
+
+
+@dp.message(AdminStates.waiting_work_start)
+async def save_work_start(msg: Message, state: FSMContext):
+    if not is_admin(msg.from_user.id):
+        return
+    val = msg.text.strip()
+    try:
+        datetime.strptime(val, "%H:%M")
+    except ValueError:
+        return await msg.answer("❗ Формат: <code>06:00</code>")
+    await set_setting("work_start", val)
+    await state.clear()
+    await add_admin_log(msg.from_user.id, "Начало ворка изменено", val)
+    await msg.answer(f"{E_SUCCESS_HTML} Начало ворка: <b>{val}</b>", reply_markup=admin_panel_kb())
+
+
+@dp.callback_query(F.data == "adm_set_end")
+async def adm_set_end(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return
+    await state.set_state(AdminStates.waiting_work_end)
+    await cb.message.answer("Введи <b>время конца</b> ворка в формате <code>HH:MM</code> (МСК):")
+    await cb.answer()
+
+
+@dp.message(AdminStates.waiting_work_end)
+async def save_work_end(msg: Message, state: FSMContext):
+    if not is_admin(msg.from_user.id):
+        return
+    val = msg.text.strip()
+    try:
+        datetime.strptime(val, "%H:%M")
+    except ValueError:
+        return await msg.answer("❗ Формат: <code>19:00</code>")
+    await set_setting("work_end", val)
+    await state.clear()
+    await add_admin_log(msg.from_user.id, "Конец ворка изменён", val)
+    await msg.answer(f"{E_SUCCESS_HTML} Конец ворка: <b>{val}</b>", reply_markup=admin_panel_kb())
+
+
+@dp.callback_query(F.data == "adm_set_urgent")
+async def adm_set_urgent(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return
+    await state.set_state(AdminStates.waiting_urgent_link)
+    await cb.message.answer("Отправь ссылку на <b>Срочную связь</b> (t.me/... или https://...):")
+    await cb.answer()
+
+
+@dp.message(AdminStates.waiting_urgent_link)
+async def save_urgent_link(msg: Message, state: FSMContext):
+    if not is_admin(msg.from_user.id):
+        return
+    from config import _normalize_tg_link
+    link = _normalize_tg_link(msg.text.strip())
+    if not link:
+        return await msg.answer("❗ Некорректная ссылка.")
+    await set_setting("urgent_support_link", link)
+    await state.clear()
+    await add_admin_log(msg.from_user.id, "Срочная связь изменена", link)
+    await msg.answer(f"{E_SUCCESS_HTML} Срочная связь: {link}", reply_markup=admin_panel_kb(),
+                     disable_web_page_preview=True)
+
+
+# ============ ЭКСПОРТ CSV ============
+
 @dp.callback_query(F.data == "adm_export_csv")
 async def adm_export_csv(cb: CallbackQuery):
-    if not is_admin(cb.from_user.id): return
+    if not is_admin(cb.from_user.id):
+        return
     await cb.answer("Генерирую файлы...")
 
     apps = await get_all_apps_export()
@@ -649,10 +879,12 @@ async def adm_export_csv(cb: CallbackQuery):
         caption="📥 Экспорт: Выплаты")
 
 
-# --- ЛОГИ АДМИНОВ ---
+# ============ ЛОГИ ============
+
 @dp.callback_query(F.data == "adm_logs")
 async def adm_logs(cb: CallbackQuery):
-    if not is_admin(cb.from_user.id): return
+    if not is_admin(cb.from_user.id):
+        return
     logs = await get_admin_logs()
     if not logs:
         return await cb.answer("Логов пока нет.", show_alert=True)
@@ -666,10 +898,12 @@ async def adm_logs(cb: CallbackQuery):
     await cb.answer()
 
 
-# --- РАЗБАН ---
+# ============ РАЗБАН ============
+
 @dp.callback_query(F.data == "adm_unban_menu")
 async def adm_unban_menu(cb: CallbackQuery, state: FSMContext):
-    if not is_admin(cb.from_user.id): return
+    if not is_admin(cb.from_user.id):
+        return
     await state.set_state(AdminStates.waiting_unban_id)
     await cb.message.answer("Введи <b>ID пользователя</b>, которого нужно разбанить:")
     await cb.answer()
@@ -677,10 +911,11 @@ async def adm_unban_menu(cb: CallbackQuery, state: FSMContext):
 
 @dp.message(AdminStates.waiting_unban_id)
 async def adm_unban_process(msg: Message, state: FSMContext):
-    if not is_admin(msg.from_user.id): return
+    if not is_admin(msg.from_user.id):
+        return
     try:
         user_id = int(msg.text.strip())
-    except:
+    except Exception:
         return await msg.answer("❗ Некорректный ID.")
 
     await unban_user(user_id)
@@ -688,33 +923,174 @@ async def adm_unban_process(msg: Message, state: FSMContext):
     await msg.answer(f"{E_SUCCESS_HTML} Пользователь {user_id} разбанен!", reply_markup=admin_panel_kb())
 
 
-@dp.callback_query(F.data.startswith("adm_ban:"))
-async def adm_ban(cb: CallbackQuery):
-    if not is_admin(cb.from_user.id): return
-    user_id = int(cb.data.split(":")[1])
+# ============ ЗАБАНИТЬ ЮЗЕРА (из карточки) ============
 
+@dp.callback_query(F.data.startswith("adm_ban_user:"))
+async def adm_ban_user(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return
+    user_id = int(cb.data.split(":")[1])
     await ban_user(user_id, "Бан от администратора")
     await add_admin_log(cb.from_user.id, "Забанил юзера", f"ID: {user_id}")
+    await cb.answer("Забанен", show_alert=True)
+    try:
+        await cb.message.edit_text("🚫 Пользователь забанен.")
+    except Exception:
+        pass
 
-    await cb.message.edit_reply_markup(reply_markup=None)
-    await cb.message.reply(f"🚫 Пользователь {user_id} забанен!")
-    await cb.answer("Забанен")
 
+# ============ ИНФО О ЮЗЕРЕ ============
+
+async def render_user_info(user_id: int):
+    u, total_apps, pending, pending_wd, total_wd = await get_user_info_stats(user_id)
+    if not u:
+        return "❌ Пользователь не найден в базе.", None
+    banned = await is_user_banned(user_id)
+    text = (f"{E_INFO_HTML} <b>Карточка пользователя</b>\n\n"
+            f"🆔 <code>{user_id}</code>\n"
+            f"👤 {u['full_name'] or '—'}\n"
+            f"🔗 @{u['username'] or '—'}\n\n"
+            f"{E_WALLET_HTML} Баланс: <b>${u['balance']:.2f}</b>\n"
+            f"{E_ORDER_HTML} Заявок всего: <b>{total_apps}</b>\n"
+            f"⏳ На проверке: <b>{pending}</b>\n"
+            f"💸 На выводе: <b>${pending_wd:.2f}</b>\n"
+            f"✅ Выведено: <b>${total_wd:.2f}</b>\n"
+            f"🚫 Забанен: <b>{'Да' if banned else 'Нет'}</b>")
+    return text, adm_user_info_kb(user_id, banned)
+
+
+@dp.callback_query(F.data.startswith("adm_user_info:"))
+async def adm_user_info(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return
+    user_id = int(cb.data.split(":")[1])
+    text, kb = await render_user_info(user_id)
+    try:
+        await cb.message.edit_text(text, reply_markup=kb)
+    except Exception:
+        await cb.message.answer(text, reply_markup=kb)
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("adm_unban_user:"))
+async def adm_unban_user_cb(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return
+    user_id = int(cb.data.split(":")[1])
+    await unban_user(user_id)
+    await add_admin_log(cb.from_user.id, "Разбанил юзера", f"ID: {user_id}")
+    text, kb = await render_user_info(user_id)
+    try:
+        await cb.message.edit_text(text, reply_markup=kb)
+    except Exception:
+        pass
+    await cb.answer("Разбанен")
+
+
+@dp.callback_query(F.data.startswith("adm_add_balance:"))
+async def adm_add_balance(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return
+    user_id = int(cb.data.split(":")[1])
+    await state.set_state(AdminStates.waiting_user_balance_amount)
+    await state.update_data(target_user=user_id, op="add")
+    await cb.message.answer(f"➕ Введи сумму для <b>начисления</b> юзеру <code>{user_id}</code>:")
+    await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("adm_sub_balance:"))
+async def adm_sub_balance(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return
+    user_id = int(cb.data.split(":")[1])
+    await state.set_state(AdminStates.waiting_user_balance_amount)
+    await state.update_data(target_user=user_id, op="sub")
+    await cb.message.answer(f"➖ Введи сумму для <b>списания</b> у юзера <code>{user_id}</code>:")
+    await cb.answer()
+
+
+@dp.message(AdminStates.waiting_user_balance_amount)
+async def adm_apply_balance(msg: Message, state: FSMContext):
+    if not is_admin(msg.from_user.id):
+        return
+    data = await state.get_data()
+    user_id = data.get("target_user")
+    op = data.get("op")
+    try:
+        amount = float(msg.text.replace(",", "."))
+        if amount <= 0:
+            raise ValueError
+    except Exception:
+        return await msg.answer("❗ Некорректная сумма.")
+    if op == "sub":
+        amount = -amount
+    await add_balance(user_id, amount)
+    await add_admin_log(msg.from_user.id, "Изменил баланс", f"ID {user_id}: {amount:+.2f}")
+    await state.clear()
+    text, kb = await render_user_info(user_id)
+    await msg.answer(f"{E_SUCCESS_HTML} Баланс изменён на <b>{amount:+.2f}$</b>")
+    await msg.answer(text, reply_markup=kb)
+
+
+@dp.callback_query(F.data.startswith("adm_user_apps:"))
+async def adm_user_apps(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return
+    user_id = int(cb.data.split(":")[1])
+    apps = await get_user_applications(user_id)
+    if not apps:
+        return await cb.answer("У пользователя нет заявок.", show_alert=True)
+    text = f"{E_ORDER_HTML} <b>Заявки юзера {user_id} (последние 10):</b>\n\n"
+    for a in apps:
+        val = a['phone_number'] if a['mode'] == 'number' else a['qr_number']
+        text += f"<b>#{a['id']}</b> | {a['mode'].upper()} | {val} | {a['status']}\n"
+    await cb.message.answer(text)
+    await cb.answer()
+
+
+# ============ ЗАЯВКИ НА ВЫВОД ============
 
 @dp.callback_query(F.data == "adm_withdrawals")
 async def adm_withdrawals(cb: CallbackQuery):
-    if not is_admin(cb.from_user.id): return
+    if not is_admin(cb.from_user.id):
+        return
     ws = await get_pending_withdrawals()
     if not ws:
         return await cb.answer("Нет активных заявок на вывод.", show_alert=True)
-    await cb.message.edit_text("💸 <b>Заявки на вывод</b>\n\nНажмите на заявку, чтобы отметить её как выплаченную:",
+    await cb.message.edit_text("💸 <b>Заявки на вывод</b>\n\nВыплатить или отменить:",
                                reply_markup=adm_withdrawals_kb(ws))
     await cb.answer()
 
 
+@dp.callback_query(F.data.startswith("adm_cancel_w:"))
+async def adm_cancel_w(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return
+    w_id = int(cb.data.split(":")[1])
+    w = await get_withdrawal(w_id)
+    if not w or w['status'] != 'pending':
+        return await cb.answer("Заявка не найдена или уже обработана.", show_alert=True)
+    await cancel_withdrawal(w_id)
+    await add_admin_log(cb.from_user.id, "Отменил вывод", f"#{w_id} (${w['amount']:.2f})")
+    try:
+        await bot.send_message(w['user_id'],
+                               f"❌ <b>Заявка на вывод #{w_id} отменена администратором.</b>\n"
+                               f"Сумма <b>${w['amount']:.2f}</b> не возвращается на баланс.")
+    except Exception:
+        pass
+    await cb.answer("Отменено", show_alert=True)
+
+    ws = await get_pending_withdrawals()
+    if not ws:
+        await cb.message.edit_text("💸 <b>Все заявки обработаны!</b>", reply_markup=admin_panel_kb())
+    else:
+        await cb.message.edit_reply_markup(reply_markup=adm_withdrawals_kb(ws))
+
+
 @dp.callback_query(F.data.startswith("adm_pay_w:"))
 async def adm_pay_w(cb: CallbackQuery):
-    if not is_admin(cb.from_user.id): return
+    if not is_admin(cb.from_user.id):
+        return
     w_id = int(cb.data.split(":")[1])
 
     ws = await get_pending_withdrawals()
@@ -728,16 +1104,12 @@ async def adm_pay_w(cb: CallbackQuery):
     try:
         crypto_bal = await get_crypto_balance()
     except Exception as e:
-        return await cb.answer(f"⚠️ Ошибка подключения к CryptoPay:\n{e}", show_alert=True)
+        return await cb.answer(f"⚠️ Ошибка CryptoPay:\n{e}", show_alert=True)
 
     if crypto_bal < amount:
         return await cb.answer(
             f"❌ Недостаточно средств на CryptoPay!\n\n"
-            f"Требуется: ${amount:.2f}\n"
-            f"В наличии: ${crypto_bal:.2f}\n\n"
-            f"Пополните баланс в @CryptoBot и нажмите снова.",
-            show_alert=True
-        )
+            f"Требуется: ${amount:.2f}\nВ наличии: ${crypto_bal:.2f}", show_alert=True)
 
     try:
         link = await create_check(amount, user_id)
@@ -755,8 +1127,26 @@ async def adm_pay_w(cb: CallbackQuery):
     except Exception:
         await cb.message.answer(f"⚠️ Не удалось написать юзеру {user_id}, но чек создан: {link}")
 
-    await approve_withdrawal(w_id)
+    await complete_withdrawal(w_id, link)  # [+] сохраняем ссылку в БД
     await add_admin_log(cb.from_user.id, "Выплатил вывод", f"ID: {w_id}, ${amount:.2f}")
+
+    # [+] Сводка за день в ЛС админу
+    try:
+        stats = await daily_stats_for_admin()
+        report = (f"📊 <b>Сводка за сегодня</b>\n\n"
+                  f"✅ Принято заявок: <b>{stats['accepted']}</b>\n"
+                  f"❌ Отклонено: <b>{stats['rejected']}</b>\n"
+                  f"    ├ Блок: <b>{stats['block']}</b>\n"
+                  f"    └ Слет: <b>{stats['slet']}</b>\n\n"
+                  f"💸 Выплат за сегодня: <b>{stats['paid_count']}</b> на <b>${stats['paid_sum']:.2f}</b>")
+        for admin_id in ADMIN_IDS:
+            try:
+                await bot.send_message(admin_id, report)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     await cb.answer("Выплата успешно отправлена юзеру!", show_alert=True)
 
     ws = await get_pending_withdrawals()
@@ -766,9 +1156,12 @@ async def adm_pay_w(cb: CallbackQuery):
         await cb.message.edit_reply_markup(reply_markup=adm_withdrawals_kb(ws))
 
 
+# ============ ОПЕРАТОРЫ / ЦЕНЫ / СТАТЫ / РАССЫЛКА ============
+
 @dp.callback_query(F.data == "adm_manage_ops")
 async def adm_manage_ops(cb: CallbackQuery):
-    if not is_admin(cb.from_user.id): return
+    if not is_admin(cb.from_user.id):
+        return
     ops = await get_operators()
     await cb.message.edit_text("⚙️ Выберите оператора для вкл/выкл:", reply_markup=adm_ops_list_kb(ops))
     await cb.answer()
@@ -776,17 +1169,21 @@ async def adm_manage_ops(cb: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("adm_op:"))
 async def op_edit(cb: CallbackQuery):
-    if not is_admin(cb.from_user.id): return
+    if not is_admin(cb.from_user.id):
+        return
     op = await get_operator(int(cb.data.split(":")[1]))
     await cb.message.edit_text(
-        f"⚙️ <b>{op['name']}</b>\n\n{E_PHONE_HTML} Номер: {'🟢 вкл' if op['number_active'] else '🔴 выкл'}\n🖼 QR: {'🟢 вкл' if op['qr_active'] else '🔴 выкл'}",
+        f"⚙️ <b>{op['name']}</b>\n\n"
+        f"{E_PHONE_HTML} Номер: {'🟢 вкл' if op['number_active'] else '🔴 выкл'}\n"
+        f"🖼 QR: {'🟢 вкл' if op['qr_active'] else '🔴 выкл'}",
         reply_markup=operator_edit_kb(op))
     await cb.answer()
 
 
 @dp.callback_query(F.data.startswith("adm_change_name:"))
 async def op_change_name(cb: CallbackQuery, state: FSMContext):
-    if not is_admin(cb.from_user.id): return
+    if not is_admin(cb.from_user.id):
+        return
     op_id = int(cb.data.split(":")[1])
     await state.set_state(AdminStates.waiting_new_name)
     await state.update_data(op_id=op_id)
@@ -796,8 +1193,10 @@ async def op_change_name(cb: CallbackQuery, state: FSMContext):
 
 @dp.message(AdminStates.waiting_new_name)
 async def save_new_name(msg: Message, state: FSMContext):
-    if not is_admin(msg.from_user.id): return
-    if not msg.text: return await msg.answer("❗ Название не может быть пустым.")
+    if not is_admin(msg.from_user.id):
+        return
+    if not msg.text:
+        return await msg.answer("❗ Название не может быть пустым.")
     data = await state.get_data()
     op_id = data["op_id"]
     await update_operator_name(op_id, msg.text.strip())
@@ -810,7 +1209,8 @@ async def save_new_name(msg: Message, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("adm_tog:"))
 async def op_toggle(cb: CallbackQuery):
-    if not is_admin(cb.from_user.id): return
+    if not is_admin(cb.from_user.id):
+        return
     _, op_id, field = cb.data.split(":")
     op_id = int(op_id)
 
@@ -829,7 +1229,7 @@ async def op_toggle(cb: CallbackQuery):
             for uid in subs:
                 try:
                     await bot.send_message(uid, f"🔔 Оператор <b>{op['name']}</b> снова в работе! Можете сдавать.")
-                except:
+                except Exception:
                     pass
             await clear_operator_subs(op_id)
             await cb.message.answer(f"✅ Отправлены уведомления {len(subs)} юзерам о включении {op['name']}.")
@@ -838,42 +1238,50 @@ async def op_toggle(cb: CallbackQuery):
 
 @dp.callback_query(F.data == "adm_start_all")
 async def adm_start_all(cb: CallbackQuery):
-    if not is_admin(cb.from_user.id): return
+    if not is_admin(cb.from_user.id):
+        return
     await set_setting("auto_work", "1")
     await start_all_operators()
     await add_admin_log(cb.from_user.id, "Начало ворка (Все вкл)", "Авто-график: Вкл")
     await cb.answer("Все операторы включены! Авто-график включен.", show_alert=True)
+    ws, we = await get_work_start(), await get_work_end()
     await cb.message.edit_text(
-        "👑 <b>Админ-панель</b>\n\n✅ <i>Все операторы включены! Авто-график (06:00-19:00) активен.</i>",
+        f"👑 <b>Админ-панель</b>\n\n✅ <i>Все операторы включены! Авто-график ({ws}–{we}) активен.</i>",
         reply_markup=admin_panel_kb())
 
 
 @dp.callback_query(F.data == "adm_stop_all")
 async def adm_stop_all(cb: CallbackQuery):
-    if not is_admin(cb.from_user.id): return
+    if not is_admin(cb.from_user.id):
+        return
     await set_setting("auto_work", "0")
     await stop_all_operators()
     await add_admin_log(cb.from_user.id, "Стоп-ворк (Все выкл)", "Авто-график: Выкл")
-    await cb.answer("Стоп-ворк! Авто-график отключен. Бот больше не включит операторов сам.", show_alert=True)
+    await cb.answer("Стоп-ворк! Авто-график отключён.", show_alert=True)
     await cb.message.edit_text(
-        "👑 <b>Админ-панель</b>\n\n⏹ <i>Стоп-ворк! Авто-график ОТКЛЮЧЕН. Операторы будут выключены, пока вы не нажмете «Начать ворк».</i>",
+        "👑 <b>Админ-панель</b>\n\n⏹ <i>Стоп-ворк! Авто-график ОТКЛЮЧЕН.</i>",
         reply_markup=admin_panel_kb())
 
 
 @dp.callback_query(F.data == "adm_run_payouts")
 async def adm_run_payouts(cb: CallbackQuery):
-    if not is_admin(cb.from_user.id): return
+    if not is_admin(cb.from_user.id):
+        return
     await cb.answer("Запускаю выплаты...", show_alert=True)
     payouts = await get_all_pending_payouts()
     count = 0
     for app in payouts:
-        if not await try_payout(app["id"]): continue
+        if not await try_payout(app["id"]):
+            continue
         op = await get_operator(app["operator_id"])
         price = op["price_qr"] if app["mode"] == "qr" else op["price_number"]
         await add_balance(app["user_id"], price)
         try:
             await bot.send_message(app["user_id"],
-                                   f"{E_SUCCESS_HTML} <b>Материал засчитан</b>\n\n{E_PHONE_HTML} Номер: <code>{app['qr_number']}</code>\n{E_ORDER_HTML} Заказ: <b>#{app['id']}</b>\n\nОфис принял материал, замечаний нет. Выплата переведена в доступно к выводу.")
+                                   f"{E_SUCCESS_HTML} <b>Материал засчитан</b>\n\n"
+                                   f"{E_PHONE_HTML} Номер: <code>{app['qr_number']}</code>\n"
+                                   f"{E_ORDER_HTML} Заказ: <b>#{app['id']}</b>\n\n"
+                                   f"Офис принял материал, замечаний нет. Выплата переведена в доступно к выводу.")
         except Exception:
             pass
         count += 1
@@ -883,23 +1291,28 @@ async def adm_run_payouts(cb: CallbackQuery):
 
 @dp.callback_query(F.data == "adm_change_price_mode")
 async def adm_change_price_mode(cb: CallbackQuery):
-    if not is_admin(cb.from_user.id): return
-    await cb.message.edit_text(f"{E_MONEY_HTML} Выберите категорию для смены цены:", reply_markup=adm_price_mode_kb())
+    if not is_admin(cb.from_user.id):
+        return
+    await cb.message.edit_text(f"{E_MONEY_HTML} Выберите категорию для смены цены:",
+                               reply_markup=adm_price_mode_kb())
     await cb.answer()
 
 
 @dp.callback_query(F.data.startswith("adm_price_mode:"))
 async def adm_price_mode(cb: CallbackQuery):
-    if not is_admin(cb.from_user.id): return
+    if not is_admin(cb.from_user.id):
+        return
     mode = cb.data.split(":")[1]
     ops = await get_operators()
-    await cb.message.edit_text(f"{E_MONEY_HTML} Выберите оператора:", reply_markup=adm_price_ops_kb(ops, mode))
+    await cb.message.edit_text(f"{E_MONEY_HTML} Выберите оператора:",
+                               reply_markup=adm_price_ops_kb(ops, mode))
     await cb.answer()
 
 
 @dp.callback_query(F.data.startswith("adm_price_op:"))
 async def adm_price_op(cb: CallbackQuery, state: FSMContext):
-    if not is_admin(cb.from_user.id): return
+    if not is_admin(cb.from_user.id):
+        return
     _, op_id, mode = cb.data.split(":")
     await state.set_state(AdminStates.waiting_price)
     await state.update_data(op_id=int(op_id), mode=mode)
@@ -909,10 +1322,11 @@ async def adm_price_op(cb: CallbackQuery, state: FSMContext):
 
 @dp.message(AdminStates.waiting_price)
 async def save_price(msg: Message, state: FSMContext):
-    if not is_admin(msg.from_user.id): return
+    if not is_admin(msg.from_user.id):
+        return
     try:
         price = float(msg.text.replace(",", "."))
-    except:
+    except Exception:
         return await msg.answer("❗ Некорректная цена.")
     data = await state.get_data()
     field = "price_number" if data["mode"] == "number" else "price_qr"
@@ -926,32 +1340,42 @@ async def save_price(msg: Message, state: FSMContext):
 
 @dp.callback_query(F.data == "adm_stats_menu")
 async def adm_stats_menu(cb: CallbackQuery):
-    if not is_admin(cb.from_user.id): return
+    if not is_admin(cb.from_user.id):
+        return
     await cb.message.edit_text(f"{E_STATS_HTML} <b>Статистика</b>", reply_markup=adm_stats_menu_kb())
     await cb.answer()
 
 
 @dp.callback_query(F.data == "adm_stats_day")
 async def stats_day(cb: CallbackQuery):
-    if not is_admin(cb.from_user.id): return
+    if not is_admin(cb.from_user.id):
+        return
     ok, fail, total = await stats_today()
     await cb.message.answer(
-        f"{E_CALENDAR_HTML} <b>За сегодня</b>\n\n{E_SUCCESS_HTML} Успешных: <b>{ok}</b>\n{E_FAIL_HTML} Неуспешных: <b>{fail}</b>\n{E_MONEY_HTML} Сумма: <b>${total:.2f}</b>")
+        f"{E_CALENDAR_HTML} <b>За сегодня</b>\n\n"
+        f"{E_SUCCESS_HTML} Успешных: <b>{ok}</b>\n"
+        f"{E_FAIL_HTML} Неуспешных: <b>{fail}</b>\n"
+        f"{E_MONEY_HTML} Сумма: <b>${total:.2f}</b>")
     await cb.answer()
 
 
 @dp.callback_query(F.data == "adm_stats_total")
 async def stats_total_cb(cb: CallbackQuery):
-    if not is_admin(cb.from_user.id): return
+    if not is_admin(cb.from_user.id):
+        return
     users, balance, apps = await stats_total()
     await cb.message.answer(
-        f"{E_TOTAL_HTML} <b>Всего</b>\n\n👥 Юзеров: <b>{users}</b>\n{E_WALLET_HTML} Баланс: <b>${balance:.2f}</b>\n{E_ORDER_HTML} Заявок: <b>{apps}</b>")
+        f"{E_TOTAL_HTML} <b>Всего</b>\n\n"
+        f"👥 Юзеров: <b>{users}</b>\n"
+        f"{E_WALLET_HTML} Баланс: <b>${balance:.2f}</b>\n"
+        f"{E_ORDER_HTML} Заявок: <b>{apps}</b>")
     await cb.answer()
 
 
 @dp.callback_query(F.data == "adm_broadcast")
 async def broadcast_start(cb: CallbackQuery, state: FSMContext):
-    if not is_admin(cb.from_user.id): return
+    if not is_admin(cb.from_user.id):
+        return
     await state.set_state(AdminStates.waiting_broadcast)
     await cb.message.answer(f"{E_BROADCAST_HTML} Отправь сообщение для рассылки:")
     await cb.answer()
@@ -959,7 +1383,8 @@ async def broadcast_start(cb: CallbackQuery, state: FSMContext):
 
 @dp.message(AdminStates.waiting_broadcast)
 async def do_broadcast(msg: Message, state: FSMContext):
-    if not is_admin(msg.from_user.id): return
+    if not is_admin(msg.from_user.id):
+        return
     await state.clear()
     ids = await all_user_ids()
     sent = 0
@@ -970,20 +1395,22 @@ async def do_broadcast(msg: Message, state: FSMContext):
             else:
                 await bot.send_message(uid, msg.html_text)
             sent += 1
-        except:
+        except Exception:
             pass
     await add_admin_log(msg.from_user.id, "Рассылка", f"Доставлено: {sent}")
     await msg.answer(f"{E_SUCCESS_HTML} Доставлено: {sent}")
 
 
-# --- РЕШЕНИЯ ПО ЗАЯВКАМ ---
+# ============ РЕШЕНИЯ ПО ЗАЯВКАМ ============
+
 @dp.callback_query(F.data.startswith("adm_accept:"))
 async def accept(cb: CallbackQuery):
-    if not is_admin(cb.from_user.id): return
+    if not is_admin(cb.from_user.id):
+        return
     app_id = int(cb.data.split(":")[1])
     app = await get_application(app_id)
-    if not app or app["status"] in ('accepted', 'rejected', 'cancelled'): return await cb.answer("Уже обработано",
-                                                                                                 show_alert=True)
+    if not app or app["status"] in ('accepted', 'rejected', 'cancelled'):
+        return await cb.answer("Уже обработано", show_alert=True)
 
     op = await get_operator(app["operator_id"])
     price = op["price_number"] if app["mode"] == "number" else op["price_qr"]
@@ -994,7 +1421,7 @@ async def accept(cb: CallbackQuery):
         try:
             await bot.send_message(app["user_id"],
                                    f"{E_SUCCESS_HTML} <b>Заявка #{app_id} принята!</b>\n{E_MONEY_HTML} +${price:.2f}")
-        except:
+        except Exception:
             pass
     else:
         payout_at = (datetime.utcnow() + timedelta(minutes=QR_COOLDOWN_MINUTES)).strftime("%Y-%m-%d %H:%M:%S")
@@ -1002,8 +1429,10 @@ async def accept(cb: CallbackQuery):
                          processed_at=datetime.utcnow())
         try:
             await bot.send_message(app["user_id"],
-                                   f"{E_NUM_ACCEPTED_HTML} <b>Номер принят в работу</b>\n\n{E_PHONE_HTML} Номер: <code>{app['qr_number']}</code>\n{E_ORDER_HTML} Заказ: <b>#{app_id}</b>\n\nОфис взял QR в работу.")
-        except:
+                                   f"{E_NUM_ACCEPTED_HTML} <b>Номер принят в работу</b>\n\n"
+                                   f"{E_PHONE_HTML} Номер: <code>{app['qr_number']}</code>\n"
+                                   f"{E_ORDER_HTML} Заказ: <b>#{app_id}</b>\n\nОфис взял QR в работу.")
+        except Exception:
             pass
 
     await increment_orders(app["user_id"], True)
@@ -1012,7 +1441,7 @@ async def accept(cb: CallbackQuery):
         await add_balance(u["referrer_id"], REF_BONUS)
         try:
             await bot.send_message(u["referrer_id"], f"🎁 Реф. бонус: <b>+${REF_BONUS:.2f}</b>")
-        except:
+        except Exception:
             pass
 
     await add_admin_log(cb.from_user.id, "Принял заявку", f"#{app_id} (${price:.2f})")
@@ -1023,10 +1452,12 @@ async def accept(cb: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("adm_undo_accept:"))
 async def undo_accept(cb: CallbackQuery):
-    if not is_admin(cb.from_user.id): return
+    if not is_admin(cb.from_user.id):
+        return
     app_id = int(cb.data.split(":")[1])
     app = await get_application(app_id)
-    if app["status"] != 'accepted': return await cb.answer("Нельзя отменить", show_alert=True)
+    if not app or app["status"] != 'accepted':
+        return await cb.answer("Нельзя отменить", show_alert=True)
 
     op = await get_operator(app["operator_id"])
     price = op["price_number"] if app["mode"] == "number" else op["price_qr"]
@@ -1042,37 +1473,89 @@ async def undo_accept(cb: CallbackQuery):
     try:
         await bot.send_message(app["user_id"],
                                f"⚠️ <b>Заявка #{app_id} возвращена на проверку.</b>\nСписано: ${deduct:.2f}")
-    except:
+    except Exception:
         pass
 
     await add_admin_log(cb.from_user.id, "Отменил принятие", f"#{app_id}")
-    await safe_edit_app_message(cb.message, f"🔄 ВОЗВРАЩЕНА",
+    await safe_edit_app_message(cb.message, "🔄 ВОЗВРАЩЕНА",
                                 application_admin_kb(app_id, app["mode"], "pending", app["user_id"]))
     await cb.answer("Возвращено")
 
 
-@dp.callback_query(F.data.startswith("adm_cancel:"))
-async def cancel_app(cb: CallbackQuery):
-    if not is_admin(cb.from_user.id): return
+@dp.callback_query(F.data.startswith("adm_undo_reject:"))
+async def undo_reject(cb: CallbackQuery):
+    # [+] фикс: возврат отклонённой заявки
+    if not is_admin(cb.from_user.id):
+        return
     app_id = int(cb.data.split(":")[1])
     app = await get_application(app_id)
-    if not app or app["status"] != 'pending': return await cb.answer("Уже обработано", show_alert=True)
+    if not app or app["status"] != 'rejected':
+        return await cb.answer("Нельзя вернуть", show_alert=True)
+
+    # Откатываем счётчик fail + возвращаем штраф блоков, если был
+    await increment_orders(app["user_id"], False, -1)
+    if app["mode"] == "qr" and app["reject_reason"] == "block":
+        op = await get_operator(app["operator_id"])
+        u = await get_user(app["user_id"])
+        if u:
+            await add_balance(app["user_id"], op["price_qr"])  # возвращаем штраф
+
+    await update_app(app_id, status="pending", reject_reason=None, processed_at=None)
+    try:
+        await bot.send_message(app["user_id"], f"🔄 <b>Заявка #{app_id} возвращена на проверку.</b>")
+    except Exception:
+        pass
+    await add_admin_log(cb.from_user.id, "Отменил отклонение", f"#{app_id}")
+    await safe_edit_app_message(cb.message, "🔄 ВОЗВРАЩЕНА",
+                                application_admin_kb(app_id, app["mode"], "pending", app["user_id"]))
+    await cb.answer("Возвращено")
+
+
+@dp.callback_query(F.data.startswith("adm_undo_cancel:"))
+async def undo_cancel(cb: CallbackQuery):
+    # [+] фикс: восстановление отменённой заявки
+    if not is_admin(cb.from_user.id):
+        return
+    app_id = int(cb.data.split(":")[1])
+    app = await get_application(app_id)
+    if not app or app["status"] != 'cancelled':
+        return await cb.answer("Нельзя восстановить", show_alert=True)
+    await update_app(app_id, status="pending", processed_at=None)
+    try:
+        await bot.send_message(app["user_id"], f"🔄 <b>Заявка #{app_id} восстановлена на проверку.</b>")
+    except Exception:
+        pass
+    await add_admin_log(cb.from_user.id, "Восстановил заявку", f"#{app_id}")
+    await safe_edit_app_message(cb.message, "🔄 ВОССТАНОВЛЕНА",
+                                application_admin_kb(app_id, app["mode"], "pending", app["user_id"]))
+    await cb.answer("Восстановлено")
+
+
+@dp.callback_query(F.data.startswith("adm_cancel:"))
+async def cancel_app(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return
+    app_id = int(cb.data.split(":")[1])
+    app = await get_application(app_id)
+    if not app or app["status"] != 'pending':
+        return await cb.answer("Уже обработано", show_alert=True)
 
     await update_app(app_id, status="cancelled", processed_at=datetime.utcnow())
     try:
         await bot.send_message(app["user_id"], f"⏹ <b>Заявка #{app_id} отменена.</b>")
-    except:
+    except Exception:
         pass
 
     await add_admin_log(cb.from_user.id, "Отменил заявку", f"#{app_id}")
-    await safe_edit_app_message(cb.message, f"⏹ ОТМЕНЕНА",
+    await safe_edit_app_message(cb.message, "⏹ ОТМЕНЕНА",
                                 application_admin_kb(app_id, app["mode"], "cancelled", app["user_id"]))
     await cb.answer("Отменено")
 
 
 @dp.callback_query(F.data.startswith("adm_code:"))
 async def request_code(cb: CallbackQuery):
-    if not is_admin(cb.from_user.id): return
+    if not is_admin(cb.from_user.id):
+        return
     app_id = int(cb.data.split(":")[1])
     app = await get_application(app_id)
     await update_app(app_id, status="code_requested", awaiting_code=1)
@@ -1080,11 +1563,10 @@ async def request_code(cb: CallbackQuery):
     try:
         await bot.send_message(
             app["user_id"],
-            f"💬 Админ запросил <b>код</b> для заявки #{app_id}.\n\n"
-            f"Пожалуйста, отправь код одним сообщением.",
+            f"💬 Админ запросил <b>код</b> для заявки #{app_id}.\n\nОтправь код одним сообщением.",
             reply_markup=user_code_kb()
         )
-    except:
+    except Exception:
         return await cb.answer("Юзер заблокировал бота", show_alert=True)
 
     await add_admin_log(cb.from_user.id, "Запросил код", f"#{app_id}")
@@ -1095,7 +1577,8 @@ async def request_code(cb: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("adm_reject:"))
 async def reject(cb: CallbackQuery, state: FSMContext):
-    if not is_admin(cb.from_user.id): return
+    if not is_admin(cb.from_user.id):
+        return
     app_id = int(cb.data.split(":")[1])
     app = await get_application(app_id)
 
@@ -1111,14 +1594,17 @@ async def reject(cb: CallbackQuery, state: FSMContext):
 
 @dp.message(AdminStates.waiting_reject_reason)
 async def process_reject_reason(msg: Message, state: FSMContext):
-    if not is_admin(msg.from_user.id): return
+    if not is_admin(msg.from_user.id):
+        return
     data = await state.get_data()
     app_id = data.get("reject_app_id")
     await state.clear()
-    if not app_id or not msg.text: return await msg.answer("⚠️ Пустая причина.")
+    if not app_id or not msg.text:
+        return await msg.answer("⚠️ Пустая причина.")
 
     app = await get_application(int(app_id))
-    if not app or app["status"] in ("rejected", "accepted", "cancelled"): return
+    if not app or app["status"] in ("rejected", "accepted", "cancelled"):
+        return
 
     await update_app(app_id, status="rejected", awaiting_code=0, reject_reason=msg.text.strip(),
                      processed_at=datetime.utcnow())
@@ -1126,7 +1612,7 @@ async def process_reject_reason(msg: Message, state: FSMContext):
     try:
         await bot.send_message(app["user_id"],
                                f"{E_FAIL_HTML} <b>Заявка #{app_id} отклонена.</b>\n\n<b>Причина:</b> {msg.text.strip()}")
-    except:
+    except Exception:
         pass
 
     await add_admin_log(msg.from_user.id, "Отклонил заявку", f"#{app_id}: {msg.text.strip()}")
@@ -1135,7 +1621,8 @@ async def process_reject_reason(msg: Message, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("adm_back:"))
 async def reject_back(cb: CallbackQuery):
-    if not is_admin(cb.from_user.id): return
+    if not is_admin(cb.from_user.id):
+        return
     app_id = int(cb.data.split(":")[1])
     app = await get_application(app_id)
     await cb.message.edit_reply_markup(
@@ -1145,11 +1632,13 @@ async def reject_back(cb: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("adm_reason:"))
 async def reject_with_reason(cb: CallbackQuery):
-    if not is_admin(cb.from_user.id): return
+    if not is_admin(cb.from_user.id):
+        return
     _, app_id, reason = cb.data.split(":")
     app_id = int(app_id)
     app = await get_application(app_id)
-    if not app or app["status"] in ("rejected", "accepted", "cancelled"): return
+    if not app or app["status"] in ("rejected", "accepted", "cancelled"):
+        return
 
     await update_app(app_id, status="rejected", awaiting_code=0, reject_reason=reason, processed_at=datetime.utcnow())
     await increment_orders(app["user_id"], False)
@@ -1160,16 +1649,17 @@ async def reject_with_reason(cb: CallbackQuery):
     if reason == "block":
         u = await get_user(app["user_id"])
         fine = min(op["price_qr"], max(0.0, u["balance"] if u else 0.0))
-        if fine > 0: await add_balance(app["user_id"], -fine)
+        if fine > 0:
+            await add_balance(app["user_id"], -fine)
         msg_text = f"{E_BLOCK_HTML} <b>Ваш номер {phone} заблокирован.</b>\nС баланса списано <b>${fine:.2f}</b>."
         try:
             await bot.send_message(app["user_id"], msg_text)
-        except:
+        except Exception:
             pass
     elif reason == "slet":
         try:
             await bot.send_message(app["user_id"], f"{E_FAIL_HTML} <b>Ваш номер {phone} - Не скан.</b>")
-        except:
+        except Exception:
             pass
 
     reason_lbl = {"block": "Блок", "slet": "Не скан"}.get(reason, reason)
@@ -1179,17 +1669,23 @@ async def reject_with_reason(cb: CallbackQuery):
     await cb.answer("Отклонено")
 
 
+# ============ WORKERS ============
+
 async def payout_worker():
     while True:
         try:
             for app in await pending_payouts():
-                if not await try_payout(app["id"]): continue
+                if not await try_payout(app["id"]):
+                    continue
                 op = await get_operator(app["operator_id"])
                 price = op["price_qr"] if app["mode"] == "qr" else op["price_number"]
                 await add_balance(app["user_id"], price)
                 try:
                     await bot.send_message(app["user_id"],
-                                           f"{E_SUCCESS_HTML} <b>Материал засчитан</b>\n\n{E_PHONE_HTML} Номер: <code>{app['qr_number']}</code>\n{E_ORDER_HTML} Заказ: <b>#{app['id']}</b>\n\nОфис принял материал, замечаний нет. Выплата переведена в доступно к выводу.")
+                                           f"{E_SUCCESS_HTML} <b>Материал засчитан</b>\n\n"
+                                           f"{E_PHONE_HTML} Номер: <code>{app['qr_number']}</code>\n"
+                                           f"{E_ORDER_HTML} Заказ: <b>#{app['id']}</b>\n\n"
+                                           f"Офис принял материал, замечаний нет. Выплата переведена в доступно к выводу.")
                 except Exception:
                     pass
         except Exception:
@@ -1202,19 +1698,31 @@ async def work_scheduler():
         try:
             auto_work = await get_setting("auto_work")
             if auto_work == "1":
-                now_utc = datetime.utcnow()
-                now_msk = now_utc + timedelta(hours=3)
+                now_msk = datetime.utcnow() + timedelta(hours=3)
 
-                if 6 <= now_msk.hour < 19:
-                    ops = await get_operators()
-                    if not any(op["number_active"] or op["qr_active"] for op in ops):
-                        await start_all_operators()
-                        logging.info("Авто-ворк: операторы включены (06:00+)")
-                else:
-                    ops = await get_operators()
-                    if any(op["number_active"] or op["qr_active"] for op in ops):
-                        await stop_all_operators()
-                        logging.info("Авто-ворк: операторы выключены (19:00+)")
+                # [+] Время берём из настроек
+                ws_s = await get_work_start()
+                we_s = await get_work_end()
+                try:
+                    ws_h, ws_m = [int(x) for x in ws_s.split(":")]
+                    we_h, we_m = [int(x) for x in we_s.split(":")]
+                except Exception:
+                    ws_h, ws_m, we_h, we_m = 6, 0, 19, 0
+
+                cur_min = now_msk.hour * 60 + now_msk.minute
+                start_min = ws_h * 60 + ws_m
+                end_min = we_h * 60 + we_m
+                in_window = (start_min <= cur_min < end_min) if start_min < end_min else (cur_min >= start_min or cur_min < end_min)
+
+                ops = await get_operators()
+                any_on = any(op["number_active"] or op["qr_active"] for op in ops)
+
+                if in_window and not any_on:
+                    await start_all_operators()
+                    logging.info("Авто-ворк: операторы включены (%s+)", ws_s)
+                elif not in_window and any_on:
+                    await stop_all_operators()
+                    logging.info("Авто-ворк: операторы выключены (%s+)", we_s)
         except Exception:
             logging.exception("work_scheduler error")
         await asyncio.sleep(60)

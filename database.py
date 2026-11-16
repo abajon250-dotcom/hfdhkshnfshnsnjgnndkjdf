@@ -47,7 +47,15 @@ async def init_db():
         );
         """)
 
+        # --- Миграции (безопасное добавление новых колонок) ---
+        await _run_migrations(db)
+
+        # Значения по умолчанию
         await db.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('auto_work', '1')")
+        await db.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('min_withdraw', '5.0')")
+        await db.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('work_start', '06:00')")
+        await db.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('work_end', '19:00')")
+        await db.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('urgent_support_link', '')")
 
         cur = await db.execute("SELECT COUNT(*) FROM operators")
         if (await cur.fetchone())[0] == 0:
@@ -77,6 +85,19 @@ async def init_db():
         await db.commit()
 
 
+async def _run_migrations(db):
+    """Безопасно добавляет новые колонки в withdrawals, если их нет."""
+    cur = await db.execute("PRAGMA table_info(withdrawals)")
+    cols = {row[1] for row in await cur.fetchall()}
+    if "check_link" not in cols:
+        await db.execute("ALTER TABLE withdrawals ADD COLUMN check_link TEXT")
+    if "completed_at" not in cols:
+        await db.execute("ALTER TABLE withdrawals ADD COLUMN completed_at TIMESTAMP")
+    if "reject_reason" not in cols:
+        await db.execute("ALTER TABLE withdrawals ADD COLUMN reject_reason TEXT")
+    await db.commit()
+
+
 async def get_setting(key):
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT value FROM settings WHERE key=?", (key,)) as c:
@@ -88,6 +109,26 @@ async def set_setting(key, value):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, value))
         await db.commit()
+
+
+async def get_min_withdraw() -> float:
+    v = await get_setting("min_withdraw")
+    try:
+        return float(v) if v is not None else 5.0
+    except (TypeError, ValueError):
+        return 5.0
+
+
+async def get_work_start() -> str:
+    return await get_setting("work_start") or "06:00"
+
+
+async def get_work_end() -> str:
+    return await get_setting("work_end") or "19:00"
+
+
+async def get_urgent_support_link() -> str:
+    return (await get_setting("urgent_support_link") or "").strip()
 
 
 async def get_user(user_id):
@@ -216,9 +257,9 @@ async def clear_operator_subs(op_id):
 async def get_all_apps_export():
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("""
-            SELECT a.id, a.user_id, u.username, a.mode, COALESCE(a.phone_number, a.qr_number) as val, 
+            SELECT a.id, a.user_id, u.username, a.mode, COALESCE(a.phone_number, a.qr_number) as val,
                    o.name, a.status, a.created_at, a.processed_at
-            FROM applications a 
+            FROM applications a
             JOIN operators o ON o.id = a.operator_id
             LEFT JOIN users u ON u.user_id = a.user_id
             ORDER BY a.id DESC
@@ -246,13 +287,27 @@ async def check_active_app(user_id):
 
 
 async def check_number_already_accepted(mode, number):
+    """Анти-дубль: блокирует, если номер уже на проверке / в коде / принят."""
     async with aiosqlite.connect(DB_PATH) as db:
+        active = "('pending','code_requested','code_sent','accepted')"
         if mode == "number":
-            query = "SELECT COUNT(*) FROM applications WHERE mode='number' AND phone_number=? AND status='accepted'"
+            query = f"SELECT COUNT(*) FROM applications WHERE mode='number' AND phone_number=? AND status IN {active}"
         else:
-            query = "SELECT COUNT(*) FROM applications WHERE mode='qr' AND qr_number=? AND status='accepted'"
+            query = f"SELECT COUNT(*) FROM applications WHERE mode='qr' AND qr_number=? AND status IN {active}"
         async with db.execute(query, (number,)) as c:
             return (await c.fetchone())[0] > 0
+
+
+async def get_last_rejection_time(user_id):
+    """Время последнего отклонения заявки у юзера (для кулдауна)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("""
+            SELECT processed_at FROM applications
+            WHERE user_id=? AND status='rejected' AND processed_at IS NOT NULL
+            ORDER BY processed_at DESC LIMIT 1
+        """, (user_id,)) as c:
+            row = await c.fetchone()
+            return row[0] if row else None
 
 
 async def create_application(**kw):
@@ -336,6 +391,13 @@ async def get_user_withdrawals(user_id):
             return await c.fetchall()
 
 
+async def get_withdrawal(w_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM withdrawals WHERE id=?", (w_id,)) as c:
+            return await c.fetchone()
+
+
 async def get_total_withdrawn(user_id):
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT COALESCE(SUM(amount), 0) FROM withdrawals WHERE user_id=? AND status='completed'",
@@ -343,7 +405,6 @@ async def get_total_withdrawn(user_id):
             return (await c.fetchone())[0]
 
 
-# --- НОВАЯ ФУНКЦИЯ: сколько на выводе (pending) ---
 async def get_pending_withdrawn(user_id):
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT COALESCE(SUM(amount), 0) FROM withdrawals WHERE user_id=? AND status='pending'",
@@ -360,6 +421,53 @@ async def get_total_fines(user_id):
             WHERE a.user_id = ? AND a.mode='qr' AND a.status='rejected' AND a.reject_reason='block'
         """, (user_id,)) as c:
             return (await c.fetchone())[0]
+
+
+async def get_user_info_stats(user_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM users WHERE user_id=?", (user_id,)) as c:
+            u = await c.fetchone()
+        async with db.execute("SELECT COUNT(*) FROM applications WHERE user_id=?", (user_id,)) as c:
+            total_apps = (await c.fetchone())[0]
+        async with db.execute(
+                "SELECT COUNT(*) FROM applications WHERE user_id=? AND status IN ('pending','code_requested','code_sent')",
+                (user_id,)) as c:
+            pending = (await c.fetchone())[0]
+        async with db.execute(
+                "SELECT COALESCE(SUM(amount),0) FROM withdrawals WHERE user_id=? AND status='pending'",
+                (user_id,)) as c:
+            pending_wd = (await c.fetchone())[0]
+        async with db.execute(
+                "SELECT COALESCE(SUM(amount),0) FROM withdrawals WHERE user_id=? AND status='completed'",
+                (user_id,)) as c:
+            total_wd = (await c.fetchone())[0]
+        return u, total_apps, pending, pending_wd, total_wd
+
+
+async def daily_stats_for_admin():
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("""
+            SELECT
+                COALESCE(SUM(CASE WHEN status='accepted' AND date(processed_at)=date('now') THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN status='rejected' AND date(processed_at)=date('now') THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN status='rejected' AND reject_reason='block' AND date(processed_at)=date('now') THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN status='rejected' AND reject_reason='slet' AND date(processed_at)=date('now') THEN 1 ELSE 0 END), 0)
+            FROM applications
+        """) as c:
+            row = await c.fetchone()
+        async with db.execute(
+                "SELECT COUNT(*), COALESCE(SUM(amount),0) FROM withdrawals WHERE status='completed' AND date(completed_at)=date('now')"
+        ) as c:
+            wrow = await c.fetchone()
+        return {
+            "accepted": row[0] or 0,
+            "rejected": row[1] or 0,
+            "block": row[2] or 0,
+            "slet": row[3] or 0,
+            "paid_count": wrow[0] or 0,
+            "paid_sum": wrow[1] or 0.0,
+        }
 
 
 async def create_ticket(user_id, message):
@@ -412,6 +520,22 @@ async def get_pending_withdrawals():
 async def approve_withdrawal(w_id):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE withdrawals SET status='completed' WHERE id=?", (w_id,))
+        await db.commit()
+
+
+async def complete_withdrawal(w_id, check_link=None):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE withdrawals SET status='completed', check_link=?, completed_at=CURRENT_TIMESTAMP WHERE id=?",
+            (check_link, w_id))
+        await db.commit()
+
+
+async def cancel_withdrawal(w_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE withdrawals SET status='cancelled', reject_reason='Отменено администратором', completed_at=CURRENT_TIMESTAMP WHERE id=?",
+            (w_id,))
         await db.commit()
 
 
