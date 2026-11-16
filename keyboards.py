@@ -88,7 +88,10 @@ def operators_kb(operators, mode, active_category='regular'):
     if not has_ops:
         kb.button(text="В этой категории пока нет операторов", callback_data="ignore")
 
-    kb.adjust(1, 2, 2) if mode == 'qr' else kb.adjust(1, 2)
+    if mode == 'qr':
+        kb.adjust(1, 2, 2)
+    else:
+        kb.adjust(1, 2)
     return kb.as_markup()
 
 
@@ -318,7 +321,7 @@ def adm_user_info_kb(user_id, is_banned):
 def adm_price_mode_kb():
     kb = InlineKeyboardBuilder()
     kb.button(text="Номер", callback_data="adm_price_mode:number", icon_custom_emoji_id=E_PHONE)
-    kb.button(text="QR", callback_data="adm_price_mode:qr")
+    kb.button(text="QR", callback_data="adm_price_mode:qr", icon_custom_emoji_id=E_SWITCH)
     kb.button(text="Назад", callback_data="admin_panel")
     kb.adjust(2, 1)
     return kb.as_markup()
@@ -339,7 +342,7 @@ def operator_edit_kb(op):
     kb.button(text="Номер вкл" if op["number_active"] else "Номер выкл",
               callback_data=f"adm_tog:{op['id']}:number_active", icon_custom_emoji_id=E_PHONE)
     kb.button(text="QR вкл" if op["qr_active"] else "QR выкл",
-              callback_data=f"adm_tog:{op['id']}:qr_active")
+              callback_data=f"adm_tog:{op['id']}:qr_active", icon_custom_emoji_id=E_SWITCH)
     kb.button(text="Изменить название", callback_data=f"adm_change_name:{op['id']}")
     kb.button(text="Назад", callback_data="adm_manage_ops")
     kb.adjust(2, 1, 1)
