@@ -3,6 +3,7 @@ import re
 from dotenv import load_dotenv
 load_dotenv()
 
+
 def _normalize_tg_link(value: str | None) -> str | None:
     if not value: return None
     v = value.strip()
@@ -10,6 +11,7 @@ def _normalize_tg_link(value: str | None) -> str | None:
     if v.startswith("@"): v = v[1:]
     if v.startswith("t.me/"): return "https://" + v
     return f"https://t.me/{v}"
+
 
 BOT_TOKEN        = os.getenv("BOT_TOKEN")
 ADMIN_IDS        = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()]
