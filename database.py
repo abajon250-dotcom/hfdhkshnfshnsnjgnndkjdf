@@ -29,7 +29,8 @@ async def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, operator_id INTEGER NOT NULL,
             mode TEXT NOT NULL, phone_number TEXT, qr_photo_id TEXT, qr_number TEXT, code TEXT,
             awaiting_code INTEGER DEFAULT 0, status TEXT DEFAULT 'pending', reject_reason TEXT,
-            payout_at TIMESTAMP, on_review_until TIMESTAMP, admin_chat_id INTEGER, admin_message_id INTEGER,
+            payout_at TIMESTAMP, on_review_until TIMESTAMP, accepted_price REAL,
+            admin_chat_id INTEGER, admin_message_id INTEGER,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, processed_at TIMESTAMP
         );
         CREATE TABLE IF NOT EXISTS tickets (
@@ -91,50 +92,71 @@ async def _run_migrations(db):
     if "check_link" not in cols: await db.execute("ALTER TABLE withdrawals ADD COLUMN check_link TEXT")
     if "completed_at" not in cols: await db.execute("ALTER TABLE withdrawals ADD COLUMN completed_at TIMESTAMP")
     if "reject_reason" not in cols: await db.execute("ALTER TABLE withdrawals ADD COLUMN reject_reason TEXT")
-    
+
     cur_u = await db.execute("PRAGMA table_info(users)")
     ucols = {row[1] for row in await cur_u.fetchall()}
-    if "balance_on_review" not in ucols: 
+    if "balance_on_review" not in ucols:
         await db.execute("ALTER TABLE users ADD COLUMN balance_on_review REAL DEFAULT 0")
 
     cur_a = await db.execute("PRAGMA table_info(applications)")
     acols = {row[1] for row in await cur_a.fetchall()}
-    if "on_review_until" not in acols: 
+    if "on_review_until" not in acols:
         await db.execute("ALTER TABLE applications ADD COLUMN on_review_until TIMESTAMP")
+    if "accepted_price" not in acols:
+        await db.execute("ALTER TABLE applications ADD COLUMN accepted_price REAL")
 
     await db.commit()
 
 
 async def process_expired_reviews():
-    """Срабатывает в фоновом режиме: по истечении 40 минут переносит деньги с balance_on_review на основной balance."""
+    """
+    Фоновый воркер: по истечении холда переносит accepted_price
+    с users.balance_on_review -> users.balance.
+    Возвращает список снятых заявок для уведомления юзеров.
+    """
+    released = []
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute("""
-            SELECT a.id, a.user_id, a.mode, a.operator_id, o.price_number, o.price_qr 
-            FROM applications a 
-            JOIN operators o ON o.id = a.operator_id 
-            WHERE a.status = 'accepted' AND a.on_review_until IS NOT NULL AND a.on_review_until <= datetime('now')
+            SELECT a.id, a.user_id, a.mode, a.qr_number, a.phone_number,
+                   a.accepted_price,
+                   COALESCE(o.price_number, 0) AS price_number,
+                   COALESCE(o.price_qr, 0)     AS price_qr
+            FROM applications a
+            LEFT JOIN operators o ON o.id = a.operator_id
+            WHERE a.status = 'accepted'
+              AND a.on_review_until IS NOT NULL
+              AND a.on_review_until <= datetime('now')
         """) as cursor:
-            expired_apps = await cursor.fetchall()
-            
-        for app in expired_apps:
-            amount = app["price_number"] if app["mode"] == "number" else app["price_qr"]
-            user_id = app["user_id"]
-            app_id = app["id"]
-            
-            # Снимаем с холдов и начисляем на реальный баланс
+            expired = await cursor.fetchall()
+
+        for app in expired:
+            if app["accepted_price"] is not None:
+                amount = float(app["accepted_price"])
+            else:
+                amount = float(app["price_number"] if app["mode"] == "number" else app["price_qr"])
+
             await db.execute("""
-                UPDATE users 
+                UPDATE users
                 SET balance_on_review = MAX(0, COALESCE(balance_on_review, 0) - ?),
-                    balance = balance + ? 
+                    balance            = COALESCE(balance, 0) + ?
                 WHERE user_id = ?
-            """, (amount, amount, user_id))
-            
-            # Очищаем метку времени, чтобы повторно не обрабатывать
-            await db.execute("UPDATE applications SET on_review_until = NULL WHERE id = ?", (app_id,))
-            
-        if expired_apps:
+            """, (amount, amount, app["user_id"]))
+
+            await db.execute("UPDATE applications SET on_review_until = NULL WHERE id = ?", (app["id"],))
+
+            released.append({
+                "app_id": app["id"],
+                "user_id": app["user_id"],
+                "mode": app["mode"],
+                "value": app["qr_number"] or app["phone_number"] or "—",
+                "amount": amount,
+            })
+
+        if expired:
             await db.commit()
+
+    return released
 
 
 async def get_setting(key):
