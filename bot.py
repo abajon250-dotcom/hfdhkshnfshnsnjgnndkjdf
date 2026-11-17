@@ -144,14 +144,15 @@ async def check_sub(cb: CallbackQuery, state: FSMContext):
 # ===== PROFILE =====
 @dp.message(F.text == "Мой профиль")
 async def profile(msg: Message, state: FSMContext):
-    await state.clear() # Сбрасываем любые зависшие стейты
+    await state.clear()
     if await is_user_banned(msg.from_user.id): return await msg.answer(f"{E_B} Вы заблокированы.")
     u = await get_user(msg.from_user.id)
     if not u: return await msg.answer("Нажми /start.")
-    
-    av = u['balance']
-    on_rev = u.get('balance_on_review', 0.0)
-    
+
+    av     = float(u['balance'] or 0.0)
+    on_rev = float(u['balance_on_review'] or 0.0)
+    hold_min = await get_setting_int("qr_cooldown", 40)
+
     pa = await pending_amount(msg.from_user.id)
     pw = await get_pending_withdrawn(msg.from_user.id); wd = await get_total_withdrawn(msg.from_user.id)
     fn = await get_total_fines(msg.from_user.id); te = av + on_rev + pa + pw + wd + fn
@@ -164,10 +165,10 @@ async def profile(msg: Message, state: FSMContext):
     try:
         me = await bot.get_me(); rl = f"https://t.me/{me.username}?start=ref_{msg.from_user.id}"
     except Exception: rl = "—"
-    
+
     t = (f"{E_P} <b>Мой профиль</b>\n\n{E_W} <b>Заработано:</b> <b>${te:.2f}</b>\n"
          f"├ Доступно к выводу: <b>${av:.2f}</b>\n"
-         f"├ На проверке (холд 40 мин): <b>${on_rev:.2f}</b>\n"
+         f"├ На проверке (холд {hold_min} мин): <b>${on_rev:.2f}</b>\n"
          f"├ Заявки на рассмотрении: <b>${pa:.2f}</b>\n"
          f"├ На выводе: <b>${pw:.2f}</b>\n├ Выведено: <b>${wd:.2f}</b>\n└ Штрафы: <b>${fn:.2f}</b>\n\n"
          f"{E_ST} <b>Статистика:</b>\n{E_OK} Успешно: <b>{u['successful_orders']}</b>\n"
@@ -211,7 +212,7 @@ async def withdraw_history(cb: CallbackQuery, state: FSMContext):
 # ===== SUPPORT =====
 @dp.message(F.text == "Поддержка")
 async def support_btn(msg: Message, state: FSMContext):
-    await state.clear() # Сбрасываем стейты
+    await state.clear()
     if await is_user_banned(msg.from_user.id): return await msg.answer(f"{E_B} Вы заблокированы.")
     urgent = await get_urgent_support_link() or SUPPORT_LINK
     await msg.answer(f"{E_SUP} <b>Поддержка</b>\n\nВыберите действие:", reply_markup=support_menu_kb(urgent))
@@ -334,7 +335,7 @@ async def withdraw(cb: CallbackQuery, state: FSMContext):
 # ===== WORK =====
 @dp.message(F.text == "Начать работу")
 async def start_work(msg: Message, state: FSMContext):
-    await state.clear() # Сбрасываем стейты
+    await state.clear()
     if await is_user_banned(msg.from_user.id): return await msg.answer(f"{E_B} Вы заблокированы.")
     if await check_mt(msg.from_user.id):
         return await msg.answer(f"🛠 <b>Тех.работы</b>\n\nПриём заявок временно приостановлен. Заглядывайте позже.",
@@ -486,7 +487,7 @@ async def catch_code(msg: Message, state: FSMContext):
 # ===== ADMIN PANEL =====
 @dp.message(F.text == "Админ-панель")
 async def panel_msg(msg: Message, state: FSMContext):
-    await state.clear() # Сбрасываем стейты
+    await state.clear()
     if not is_admin(msg.from_user.id): return await msg.answer(f"⛔ У вас нет доступа.\nВаш ID: <code>{msg.from_user.id}</code>")
     aw = await get_setting("auto_work"); st = "🟢 Включен" if aw == "1" else "🔴 Отключен"
     ws, we = await get_work_start(), await get_work_end()
@@ -957,7 +958,6 @@ async def save_new_name(msg: Message, state: FSMContext):
     op = await get_operator(oid); await add_admin_log(msg.from_user.id, "Сменил имя оператора", f"{oid} → {msg.text.strip()}")
     await msg.answer(f"{E_OK} Название изменено на <b>{msg.text.strip()}</b>!", reply_markup=operator_edit_kb(op))
 
-
 @dp.callback_query(F.data.startswith("adm_tog:"))
 async def op_toggle(cb: CallbackQuery):
     if not is_admin(cb.from_user.id): return
@@ -1091,24 +1091,25 @@ async def accept(cb: CallbackQuery):
     if not is_admin(cb.from_user.id): return
     aid = int(cb.data.split(":")[1]); app = await get_application(aid)
     if not app or app["status"] in ('accepted', 'rejected', 'cancelled'): return await cb.answer("Уже обработано", show_alert=True)
-    
+
     op = await get_operator(app["operator_id"])
     price = op["price_number"] if app["mode"] == "number" else op["price_qr"]
     cooldown_mins = await get_setting_int("qr_cooldown", 40)
 
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
-            UPDATE applications 
-            SET status = 'accepted', 
-                awaiting_code = 0, 
-                processed_at = CURRENT_TIMESTAMP, 
-                on_review_until = datetime('now', '+' || ? || ' minutes')
+            UPDATE applications
+            SET status           = 'accepted',
+                awaiting_code    = 0,
+                processed_at     = CURRENT_TIMESTAMP,
+                accepted_price   = ?,
+                on_review_until  = datetime('now', '+' || ? || ' minutes')
             WHERE id = ?
-        """, (cooldown_mins, aid))
-        
+        """, (price, cooldown_mins, aid))
+
         await db.execute("""
-            UPDATE users 
-            SET balance_on_review = COALESCE(balance_on_review, 0) + ? 
+            UPDATE users
+            SET balance_on_review = COALESCE(balance_on_review, 0) + ?
             WHERE user_id = ?
         """, (price, app["user_id"]))
         await db.commit()
@@ -1129,9 +1130,9 @@ async def accept(cb: CallbackQuery):
         try: await bot.send_message(u["referrer_id"], f"🎁 Реф. бонус: <b>+${b:.2f}</b>")
         except Exception: pass
 
-    await add_admin_log(cb.from_user.id, "Принял заявку (с холдом 40м)", f"#{aid} (${price:.2f})")
+    await add_admin_log(cb.from_user.id, "Принял заявку (с холдом)", f"#{aid} (${price:.2f})")
     await safe_edit_app(cb.message, f"{E_OK} ПРИНЯТА (Холд {cooldown_mins} мин)", application_admin_kb(aid, app["mode"], "accepted", app["user_id"]))
-    await cb.answer("Принято, средства отправлены на холд на 40 минут!")
+    await cb.answer(f"Принято, средства на холде {cooldown_mins} мин!")
 
 
 @dp.callback_query(F.data.startswith("adm_undo_accept:"))
@@ -1139,24 +1140,26 @@ async def undo_accept(cb: CallbackQuery):
     if not is_admin(cb.from_user.id): return
     aid = int(cb.data.split(":")[1]); app = await get_application(aid)
     if not app or app["status"] != 'accepted': return await cb.answer("Нельзя отменить", show_alert=True)
-    
-    op = await get_operator(app["operator_id"]); price = op["price_number"] if app["mode"] == "number" else op["price_qr"]
-    
+
+    price = app["accepted_price"]
+    if price is None:
+        op = await get_operator(app["operator_id"]); price = op["price_number"] if app["mode"] == "number" else op["price_qr"]
+
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE applications SET on_review_until = NULL WHERE id = ?", (aid,))
         await db.execute("""
-            UPDATE users 
-            SET balance_on_review = MAX(0, COALESCE(balance_on_review, 0) - ?) 
+            UPDATE users
+            SET balance_on_review = MAX(0, COALESCE(balance_on_review, 0) - ?)
             WHERE user_id = ?
         """, (price, app["user_id"]))
         await db.commit()
 
-    await update_app(aid, status="pending", payout_at=None, processed_at=None)
+    await update_app(aid, status="pending", payout_at=None, processed_at=None, accepted_price=None)
     await increment_orders(app["user_id"], True, -1)
-    
+
     try: await bot.send_message(app["user_id"], f"⚠️ <b>Заявка #{aid} возвращена на проверку.</b>")
     except Exception: pass
-    
+
     await add_admin_log(cb.from_user.id, "Отменил принятие", f"#{aid}")
     await safe_edit_app(cb.message, "🔄 ВОЗВРАЩЕНА", application_admin_kb(aid, app["mode"], "pending", app["user_id"]))
     await cb.answer("Возвращено")
@@ -1240,7 +1243,7 @@ async def process_reject_reason(msg: Message, state: FSMContext):
     await increment_orders(app["user_id"], False)
     try: await bot.send_message(app["user_id"], f"{E_NO} <b>Заявка #{aid} отклонена.</b>\n\n<b>Причина:</b> {msg.text.strip()}")
     except Exception: pass
-    await add_admin_log(cb.from_user.id, "Отклонил заявку", f"#{aid}: {msg.text.strip()}")
+    await add_admin_log(msg.from_user.id, "Отклонил заявку", f"#{aid}: {msg.text.strip()}")
     await msg.answer(f"{E_NO} Заявка #{aid} отклонена.")
 
 
@@ -1278,7 +1281,20 @@ async def reject_with_reason(cb: CallbackQuery):
 async def review_hold_worker():
     while True:
         try:
-            await process_expired_reviews()
+            released = await process_expired_reviews()
+            for r in released:
+                try:
+                    icon = "🖼" if r["mode"] == "qr" else "📱"
+                    await bot.send_message(
+                        r["user_id"],
+                        f"{E_OK} <b>Холд снят — деньги зачислены на баланс!</b>\n\n"
+                        f"{icon} Номер: <code>{r['value']}</code>\n"
+                        f"{E_O} Заказ: <b>#{r['app_id']}</b>\n"
+                        f"{E_M} Зачислено: <b>${r['amount']:.2f}</b>\n\n"
+                        f"Средства доступны к выводу в «Мой профиль»."
+                    )
+                except Exception:
+                    logging.exception("hold notify failed")
         except Exception:
             logging.exception("review_hold_worker error")
         await asyncio.sleep(30)
@@ -1324,11 +1340,11 @@ async def main():
     await init_db()
     dp.message.middleware(SubscriptionMiddleware())
     dp.callback_query.middleware(SubscriptionMiddleware())
-    
+
     asyncio.create_task(review_hold_worker())
     asyncio.create_task(payout_worker())
     asyncio.create_task(work_scheduler())
-    
+
     await bot.delete_webhook(drop_pending_updates=True)
     logging.info("Bot started")
     await dp.start_polling(bot)
