@@ -142,14 +142,13 @@ async def check_sub(cb: CallbackQuery, state: FSMContext):
 
 
 # ===== PROFILE =====
-@dp.message(F.text.contains("Мой профиль"))
+@dp.message(F.text == "Мой профиль")
 async def profile(msg: Message, state: FSMContext):
-    await state.clear()
+    await state.clear() # Сбрасываем любые зависшие стейты
     if await is_user_banned(msg.from_user.id): return await msg.answer(f"{E_B} Вы заблокированы.")
     u = await get_user(msg.from_user.id)
     if not u: return await msg.answer("Нажми /start.")
     
-    # Считаем баланс с учетом холдов на проверке (balance_on_review)
     av = u['balance']
     on_rev = u.get('balance_on_review', 0.0)
     
@@ -180,7 +179,8 @@ async def profile(msg: Message, state: FSMContext):
 
 
 @dp.callback_query(F.data == "audit_log")
-async def audit_log(cb: CallbackQuery):
+async def audit_log(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
     apps = await get_user_applications(cb.from_user.id)
     if not apps: return await cb.answer(f"{E_O} У вас пока нет заявок.", show_alert=True)
     t = f"{E_O} <b>Журнал заявок (последние 10):</b>\n\n"
@@ -192,7 +192,8 @@ async def audit_log(cb: CallbackQuery):
 
 
 @dp.callback_query(F.data == "withdraw_history")
-async def withdraw_history(cb: CallbackQuery):
+async def withdraw_history(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
     wds = await get_user_withdrawals(cb.from_user.id)
     if not wds: return await cb.answer(f"{E_M} У вас пока нет выплат.", show_alert=True)
     t = f"{E_M} <b>История выплат:</b>\n\n"
@@ -208,9 +209,9 @@ async def withdraw_history(cb: CallbackQuery):
 
 
 # ===== SUPPORT =====
-@dp.message(F.text.contains("Поддержка"))
+@dp.message(F.text == "Поддержка")
 async def support_btn(msg: Message, state: FSMContext):
-    await state.clear()
+    await state.clear() # Сбрасываем стейты
     if await is_user_banned(msg.from_user.id): return await msg.answer(f"{E_B} Вы заблокированы.")
     urgent = await get_urgent_support_link() or SUPPORT_LINK
     await msg.answer(f"{E_SUP} <b>Поддержка</b>\n\nВыберите действие:", reply_markup=support_menu_kb(urgent))
@@ -236,7 +237,8 @@ async def handle_support_msg(msg: Message, state: FSMContext):
 
 
 @dp.callback_query(F.data == "support_my")
-async def support_my(cb: CallbackQuery):
+async def support_my(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
     tickets = await get_user_tickets(cb.from_user.id)
     if not tickets: return await cb.answer(f"{E_N} У вас пока нет обращений.", show_alert=True)
     for t in tickets:
@@ -266,7 +268,8 @@ async def user_send_reply(msg: Message, state: FSMContext):
 
 
 @dp.callback_query(F.data.startswith("user_close_ticket:"))
-async def user_close_ticket(cb: CallbackQuery):
+async def user_close_ticket(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
     tid = int(cb.data.split(":")[1])
     await reply_ticket(tid, "Пользователь отметил проблему решенной"); await close_ticket(tid)
     await cb.message.edit_text(f"{E_OK} Обращение #{tid} закрыто. Спасибо!", reply_markup=None)
@@ -298,7 +301,8 @@ async def admin_send_reply(msg: Message, state: FSMContext):
 
 
 @dp.callback_query(F.data.startswith("adm_close_ticket:"))
-async def adm_close_ticket(cb: CallbackQuery):
+async def adm_close_ticket(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
     if not is_admin(cb.from_user.id): return
     tid = int(cb.data.split(":")[1])
     await reply_ticket(tid, "Закрыто администратором"); await close_ticket(tid)
@@ -313,7 +317,8 @@ async def adm_close_ticket(cb: CallbackQuery):
 
 # ===== WITHDRAW =====
 @dp.callback_query(F.data == "withdraw")
-async def withdraw(cb: CallbackQuery):
+async def withdraw(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
     if await check_mt(cb.from_user.id): return await cb.answer("🛠 Ведутся тех.работы. Попробуйте позже.", show_alert=True)
     u = await get_user(cb.from_user.id); amount = u["balance"]; mw = await get_min_withdraw()
     if amount < mw:
@@ -327,9 +332,9 @@ async def withdraw(cb: CallbackQuery):
 
 
 # ===== WORK =====
-@dp.message(F.text.contains("Начать работу"))
+@dp.message(F.text == "Начать работу")
 async def start_work(msg: Message, state: FSMContext):
-    await state.clear()
+    await state.clear() # Сбрасываем стейты
     if await is_user_banned(msg.from_user.id): return await msg.answer(f"{E_B} Вы заблокированы.")
     if await check_mt(msg.from_user.id):
         return await msg.answer(f"🛠 <b>Тех.работы</b>\n\nПриём заявок временно приостановлен. Заглядывайте позже.",
@@ -346,7 +351,8 @@ async def choose_mode(cb: CallbackQuery, state: FSMContext):
 
 
 @dp.callback_query(F.data == "back_main")
-async def back_main_inline(cb: CallbackQuery):
+async def back_main_inline(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
     await cb.message.edit_text("🏠 Главное меню внизу 👇", reply_markup=None); await cb.answer()
 
 
@@ -478,9 +484,9 @@ async def catch_code(msg: Message, state: FSMContext):
 
 
 # ===== ADMIN PANEL =====
-@dp.message(F.text.contains("Админ-панель"))
+@dp.message(F.text == "Админ-панель")
 async def panel_msg(msg: Message, state: FSMContext):
-    await state.clear()
+    await state.clear() # Сбрасываем стейты
     if not is_admin(msg.from_user.id): return await msg.answer(f"⛔ У вас нет доступа.\nВаш ID: <code>{msg.from_user.id}</code>")
     aw = await get_setting("auto_work"); st = "🟢 Включен" if aw == "1" else "🔴 Отключен"
     ws, we = await get_work_start(), await get_work_end()
@@ -489,7 +495,8 @@ async def panel_msg(msg: Message, state: FSMContext):
 
 
 @dp.callback_query(F.data == "admin_panel")
-async def back_to_admin(cb: CallbackQuery):
+async def back_to_admin(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
     if not is_admin(cb.from_user.id): return
     aw = await get_setting("auto_work"); st = "🟢 Включен" if aw == "1" else "🔴 Отключен"
     ws, we = await get_work_start(), await get_work_end()
@@ -499,7 +506,8 @@ async def back_to_admin(cb: CallbackQuery):
 
 
 @dp.callback_query(F.data == "close_admin")
-async def close_admin(cb: CallbackQuery):
+async def close_admin(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
     if not is_admin(cb.from_user.id): return
     await cb.message.edit_text(f"{E_NO} <b>Админ-панель закрыта.</b>", reply_markup=None); await cb.answer()
 
@@ -1077,7 +1085,7 @@ async def do_broadcast(msg: Message, state: FSMContext):
     await msg.answer(f"{E_OK} Доставлено: {sent}")
 
 
-# ===== APP DECISIONS (С ЗАДЕРЖКОЙ 40 МИНУТ НА ПРИНЯТИЕ) =====
+# ===== APP DECISIONS =====
 @dp.callback_query(F.data.startswith("adm_accept:"))
 async def accept(cb: CallbackQuery):
     if not is_admin(cb.from_user.id): return
@@ -1086,10 +1094,9 @@ async def accept(cb: CallbackQuery):
     
     op = await get_operator(app["operator_id"])
     price = op["price_number"] if app["mode"] == "number" else op["price_qr"]
-    cooldown_mins = await get_setting_int("qr_cooldown", 40) # 40 минут кулдаун
+    cooldown_mins = await get_setting_int("qr_cooldown", 40)
 
     async with aiosqlite.connect(DB_PATH) as db:
-        # Устанавливаем статус accepted, ставим таймер разморозки через 40 минут и добавляем средства НА ПРОВЕРКУ (холд)
         await db.execute("""
             UPDATE applications 
             SET status = 'accepted', 
@@ -1107,7 +1114,7 @@ async def accept(cb: CallbackQuery):
         await db.commit()
 
     if app["mode"] == "number":
-        try: await bot.send_message(app["user_id"], f"{E_OK} <b>Заявка #{aid} принята!</b>\n{E_M} Сумма **${price:.2f}** отправлена на проверку/холд на {cooldown_mins} мин.")
+        try: await bot.send_message(app["user_id"], f"{E_OK} <b>Заявка #{aid} принята!</b>\n{E_M} Сумма <b>${price:.2f}</b> отправлена на проверку/холд на {cooldown_mins} мин.")
         except Exception: pass
     else:
         try:
@@ -1134,12 +1141,9 @@ async def undo_accept(cb: CallbackQuery):
     if not app or app["status"] != 'accepted': return await cb.answer("Нельзя отменить", show_alert=True)
     
     op = await get_operator(app["operator_id"]); price = op["price_number"] if app["mode"] == "number" else op["price_qr"]
-    u = await get_user(app["user_id"])
     
-    # Снимаем с холда (balance_on_review) или с основного баланса, если уже успели зачислиться
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE applications SET on_review_until = NULL WHERE id = ?", (aid,))
-        # Сначала пробуем списать с холда
         await db.execute("""
             UPDATE users 
             SET balance_on_review = MAX(0, COALESCE(balance_on_review, 0) - ?) 
@@ -1236,7 +1240,7 @@ async def process_reject_reason(msg: Message, state: FSMContext):
     await increment_orders(app["user_id"], False)
     try: await bot.send_message(app["user_id"], f"{E_NO} <b>Заявка #{aid} отклонена.</b>\n\n<b>Причина:</b> {msg.text.strip()}")
     except Exception: pass
-    await add_admin_log(msg.from_user.id, "Отклонил заявку", f"#{aid}: {msg.text.strip()}")
+    await add_admin_log(cb.from_user.id, "Отклонил заявку", f"#{aid}: {msg.text.strip()}")
     await msg.answer(f"{E_NO} Заявка #{aid} отклонена.")
 
 
@@ -1272,17 +1276,15 @@ async def reject_with_reason(cb: CallbackQuery):
 
 # ===== WORKERS =====
 async def review_hold_worker():
-    """Фоновый воркер: каждые 30 секунд проверяет истечение 40 минут холда и зачисляет деньги на баланс."""
     while True:
         try:
-            await process_expired_reviews() # Функция из database.py для начисления с истекшим холдом
+            await process_expired_reviews()
         except Exception:
             logging.exception("review_hold_worker error")
         await asyncio.sleep(30)
 
 
 async def payout_worker():
-    """Сохранено как страховка для старых заявок"""
     while True:
         try:
             if not await is_auto_payout(): await asyncio.sleep(30); continue
@@ -1323,7 +1325,6 @@ async def main():
     dp.message.middleware(SubscriptionMiddleware())
     dp.callback_query.middleware(SubscriptionMiddleware())
     
-    # Запускаем фоновые задачи (проверка 40-минутного холда + воркеры)
     asyncio.create_task(review_hold_worker())
     asyncio.create_task(payout_worker())
     asyncio.create_task(work_scheduler())
